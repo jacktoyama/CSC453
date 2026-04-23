@@ -45,5 +45,20 @@ typedef struct threadinfo_st {
     size_t stacksize;                   /* Size of allocated stack */
     rfile state;                        /* saved registers */
     unsigned int status;                /* exited? exit status? */
-    thread lib_one 
-}
+    thread lib_one; 			/* Two pointers reserved */
+    thread lib_two;
+    thread sched_one;
+    thread sched_two;
+    thread exited;
+} context;
+
+typdef int (*lwpfun)(void *);
+
+typedef struct scheduler {
+    void (*init)(void); 		/* initialize any structure */
+    void (*shutdown)(void);     	/* tear down any structure */
+    void (*admit)(thread new);  	/* add a thread to the pool*/
+    void (*remove)(thread victim); 	/* remove a thread from the pool */
+    void (*next)(void); 		/* select a thread to schedule*/
+    int (*glen)(void); 			/* number of ready threads */
+} *scheduler;
