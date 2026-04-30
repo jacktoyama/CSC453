@@ -8,6 +8,12 @@
 #include "RoundRobin.h"
 #include "lwp.h"
 
+// Global variables
+static thread current_thread = NULL;
+static scheduler current_scheduler = NULL;
+
+
+
 /* LWP Library */
 
 // typedef int (*lwpfun)(void *); reads as lwpfun is a type for a ptr to a function that takes a void * arg and returns int
@@ -107,7 +113,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->state.fxsave = FPU_INIT; 			// Initialize predefined FPU_INIT value
 	t->status = LWP_LIVE; 				// Thread created, now go live
 	
-//	// New so start out unlinked
+	// New so start out unlinked
 	t->lib_one = NULL; 
 	t->lib_two = NULL;
 	t->sched_one = NULL;
@@ -116,6 +122,24 @@ tid_t lwp_create(lwpfun fun, void *args) {
 
 	RoundRobin->admit(t); 					// Add thread to the queue
 	return t->tid;
+}
+
+
+void lwp_yield(void) {
+	// Save the current context
+	thread old_thread = current_thread;
+	
+	thread new_thread = RoundRobin->next(); // Grab the new thread
+	if (new_thread == NULL) {
+		fprintf(stderr, "ERROR: no new thread!\n");
+		exit(LWPTERMSTAT(new_thread->status));
+	}
+
+	// Now current thread is the new thread
+	current_thread = new_thread;
+	
+	swap_rfiles(&old+thread->state, &new_thread->state);
+
 }
 
 thread tid2thread(tid_t t) {
@@ -127,6 +151,52 @@ thread tid2thread(tid_t t) {
 	}
 }
 
+
+
+void lwp_set_scheduler(scheduler sched) {
+	// initialize new schedular, if sched is NULL use round robin default
+	if (sched == NULL) {
+		RoundRobin->init();
+	} else {
+		sched->init();
+	}
+
+	// if a scheduler is already active, admit all the threads then shutdown the old scheduler cleanly
+	if (current_scheduler != NULL) {
+		while(1) {
+			thread t_temp = current_scheduler->next();
+			if (t_temp == NULL) {
+				break;
+			}
+	
+			current_scheduler->remove(t_temp);
+			sched->admit(t_temp);
+		}
+		current_scheduler->shutdown();
+	}
+
+	// set the new scheduler to be the current one
+	current_scheduler = sched;
+	return;
+}
+
+
+scheduler lwp_get_scheduler(void) {
+	return current_scheduler;
+}
+
+
+tid_t lwp_gettid(void) {
+	if (current_thread == NULL) {
+		return NO_THREAD;
+	}
+	else {
+		return current_thread;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 volatile int ran = 0;
 int thread_func(void *args) {
 	ran = 1;
@@ -134,48 +204,6 @@ int thread_func(void *args) {
 }
 
 int main(void) {
-//	struct rlimit lim;
-//
-//	// Find stack size	
-//	long page_size = sysconf(_SC_PAGE_SIZE);
-//	if (page_size == -1) {
-//		fprintf(stderr, "Error: sysconf failed!\n");
-//	} else {
-//		printf("System page size: %ld bytes\n", page_size);
-//	}
-//
-//	// Grab stack size resource limit
-//	long soft_stack_limit;
-//	if (getrlimit(RLIMIT_STACK, &lim) == 0) {
-//		soft_stack_limit = (long)lim.rlim_cur; // Get soft litmit of stack		
-//		printf("Soft limit: %ld\n", soft_stack_limit);
-//	} else {
-//		fprintf(stderr, "Error: getrlimit failed!\n");
-//	}
-//
-//	long rounded_stacksize = ((soft_stack_limit + page_size -1) / page_size ) * page_size;
-//	unsigned long t_num = 1;
-//
-//		
-//	// NOTE: mmap returns the start of the mapped region; aka lowest addy/base/bottom of stack).
-//	// Stack grows downward (high address to low address)
-//	
-//	// Create a thread object
-//	thread t = malloc(sizeof(context)); // gets access to context struct
-//	t->tid = t_num++;
-//	t->stack = mmap(NULL, rounded_stacksize, PROT_READ | PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK, -1, 0);	
-//	t->stacksize = rounded_stacksize; // 8388608 bytes or 8MB
-//	
-//	// Move by t->stacksize * sizeof(type)
-//	// So typecast t->stack to type char * so it t->stacksize * sizeof(char) = 8388608 * 1
-//	// Then re typecase it to unsigned long *
-//	// 8388608 and 0x800000 are the same value in memory
-//	unsigned long *s_ptr =  (unsigned long *)((char *)t->stack + t->stacksize); // top of stack (end of the allocated region)
-//	s_ptr = (unsigned long *)((unsigned long)s_ptr & ~(unsigned long)0xF);
-//	printf("rounded stacksize is: %d\n", t->stacksize);
-//	printf("base address of the mapped stack region is: %p\n", (void *)t->stack);
-//	printf("Top address of the mapped stack region is:  %p\n", (void *)s_ptr);
-//
 	RoundRobin->init();
 	tid_t thread_tid = lwp_create(thread_func, NULL);
 	
