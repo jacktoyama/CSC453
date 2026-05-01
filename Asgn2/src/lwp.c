@@ -138,8 +138,22 @@ void lwp_yield(void) {
 	// Now current thread is the new thread
 	current_thread = new_thread;
 	
-	swap_rfiles(&old+thread->state, &new_thread->state);
+	swap_rfiles(&old_thread->state, &new_thread->state);
 
+}
+
+void lwp_exit(int exitval) {
+	// Only use lower 8 bits of exitval
+	int status = exitval & 0xFF;
+	// Mark thread as terminated
+	MKTERMSTAT(LWP_TERM, status);
+
+	current_scheduler->remove(current_thread);
+
+	// Handle blacked threads?
+	// Terminate queue?
+
+	lwp_yield();
 }
 
 thread tid2thread(tid_t t) {
