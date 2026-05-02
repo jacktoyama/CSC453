@@ -7,11 +7,15 @@
 #include <sys/resource.h>
 #include "RoundRobin.h"
 #include "lwp.h"
+#include "DoubleLinkedList.h"
 
 // Global variables
 static thread current_thread = NULL;
 static scheduler current_scheduler = NULL;
 
+
+DoubleLinkedList toTerminate;
+DoubleLinkedList_init(&toTerminate);
 
 
 /* LWP Library */
@@ -150,8 +154,14 @@ void lwp_exit(int exitval) {
 
 	current_scheduler->remove(current_thread);
 
-	// Handle blacked threads?
-	// Terminate queue?
+	/* Handle any thread blocked in lwp_wait() — if there's a thread sitting on the
+	 wait queue waiting for something to terminate, you need to take the oldest one
+	  off the wait queue, associate it with this newly terminated thread, and re-admit
+	   it to the scheduler with current_scheduler->admit(). */
+
+	DoubleLinkedList_push_back(&toTerminate, current_thread);
+
+	
 
 	lwp_yield();
 }
