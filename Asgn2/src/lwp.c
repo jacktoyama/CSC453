@@ -7,11 +7,15 @@
 #include <sys/resource.h>
 #include "RoundRobin.h"
 #include "lwp.h"
+#include "DoubleLinkedList.h"
 
 // Global variables
 static thread current_thread = NULL;
 static scheduler current_scheduler = NULL;
+unsigned long t_num = 1;
 
+DoubleLinkedList toTerminate;
+DoubleLinkedList_init(&toTerminate);
 
 
 /* LWP Library */
@@ -23,9 +27,10 @@ static void lwp_wrap(lwpfun fun, void *arg) {
   	 */
 	int rval;
 	rval = fun(arg);
-	//lwp_exit(rval);
+	lwp_exit(rval);
 }
 
+// -----lwp_create()-----
 tid_t lwp_create(lwpfun fun, void *args) {
 	struct rlimit lim;
 
@@ -51,8 +56,6 @@ tid_t lwp_create(lwpfun fun, void *args) {
 
 	// Round page size in case other machines don't have the exact 8Mb bytes
 	long rounded_stacksize = ((soft_limit + page_size -1) / page_size ) * page_size;
-	unsigned long t_num = 1;
-
 		
 	// NOTE: mmap returns the start of the mapped region; aka lowest addy/base/bottom of stack).
 	// Stack grows downward (high address to low address)
@@ -120,16 +123,16 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->sched_two = NULL;
 	t->exited = NULL;
 
-	RoundRobin->admit(t); 					// Add thread to the queue
+	current_scheduler->admit(t); 					// Add thread to the queue
 	return t->tid;
 }
 
-
+// -----lwp_yield-----
 void lwp_yield(void) {
 	// Save the current context
 	thread old_thread = current_thread;
 	
-	thread new_thread = RoundRobin->next(); // Grab the new thread
+	thread new_thread = current_scheduler->next(); // Grab the new thread
 	if (new_thread == NULL) {
 		fprintf(stderr, "ERROR: no new thread!\n");
 		exit(LWPTERMSTAT(new_thread->status));
@@ -138,10 +141,62 @@ void lwp_yield(void) {
 	// Now current thread is the new thread
 	current_thread = new_thread;
 	
-	swap_rfiles(&old+thread->state, &new_thread->state);
+	swap_rfiles(&old_thread->state, &new_thread->state);
 
 }
 
+// -----lwp_start()------
+void lwp_start(void) {
+	// Start the lwp system. 
+	// Converts the calling thread into a LWP
+	// Yields to whichever thread the scheduler choose
+	scheduler start_scheduler = lwp_get_scheduler(); // get the current scheduler and turn it into an LWP		
+
+	// Original calling thread - No need to init a stack because it already has one.
+	thread original_thread = malloc(sizeof(context));
+	original_thread->tid = t_num++;
+	original_thread->stack = NULL;
+	original_thread->stacksize = 0;
+	original_thread->status = LWP_LIVE;
+
+	original_thread->lib_one = NULL;
+	original_thread->lib_two = NULL;
+	original_thread->sched_one = NULL;
+	original_thread->sched_two = NULL;
+	original_thread->exited = NULL;
+	
+	swap_rfiles(NULL, &original_thread->state);
+	
+	// Current thread is now officially the main thread
+	current_thread = original_thread; 
+	
+	// Add the OG thread to the scheduler (TID should be 1)
+	start_scheduler->admit(original_thread);
+	
+	// Yield
+	lwp_yield();
+}
+
+// -----lwp_exit()------
+void lwp_exit(int exitval) {
+	// Only use lower 8 bits of exitval
+	int status = exitval & 0xFF;
+
+	// Mark thread as terminated
+	MKTERMSTAT(LWP_TERM, status);
+
+	current_scheduler->remove(current_thread);
+
+	/* Handle any thread blocked in lwp_wait() — if there's a thread sitting on the
+ 	 * wait queue waiting for something to terminate, you need to take the oldest one
+ 	 * off the wait queue, associate it with this newly terminated thread, and re-admit
+ 	 * it to the scheduler with current_scheduler->admit(). 
+ 	*/
+ 	DoubleLinkedList_push_back(&toTerminate, current_thread);
+	lwp_yield();  	
+}
+
+// -----tid2thread-----
 thread tid2thread(tid_t t) {
 	thread curr_thread = RoundRobin->next();
 	if (curr_thread->tid == t) {
@@ -151,94 +206,98 @@ thread tid2thread(tid_t t) {
 	}
 }
 
-
-
+// -----lwp_set_scheduler-----
 void lwp_set_scheduler(scheduler sched) {
-	// initialize new schedular, if sched is NULL use round robin default
+	scheduler old_scheduler = current_scheduler;
+
+	// Initialize new schedular, if sched is NULL use round robin default
 	if (sched == NULL) {
-		RoundRobin->init();
+		//RoundRobin->init();
+		sched = RoundRobin;
 	} else {
 		sched->init();
 	}
 
-	// if a scheduler is already active, admit all the threads then shutdown the old scheduler cleanly
-	if (current_scheduler != NULL) {
-		while(1) {
-			thread t_temp = current_scheduler->next();
+	// If the old scheduler is already the one we're using, then do nothing
+	if (old_scheduler == sched) {
+		return;
+	}
+
+	// If a scheduler is already active, admit all the threads then shutdown the old scheduler cleanly
+	if (old_scheduler != NULL) {
+		while(old_scheduler->qlen() > 0) {
+			thread t_temp = old_scheduler->next();
 			if (t_temp == NULL) {
 				break;
 			}
 	
-			current_scheduler->remove(t_temp);
+			old_scheduler->remove(t_temp);
 			sched->admit(t_temp);
 		}
-		current_scheduler->shutdown();
+		
+		// Clean up 
+		old_scheduler->shutdown();
 	}
 
-	// set the new scheduler to be the current one
+	// Set the new scheduler to be the current one
 	current_scheduler = sched;
 	return;
 }
 
-
+// -----lwp_get_scheduler-----
 scheduler lwp_get_scheduler(void) {
 	return current_scheduler;
 }
 
-
+// -----lwp_gettid-----
 tid_t lwp_gettid(void) {
 	if (current_thread == NULL) {
 		return NO_THREAD;
 	}
 	else {
-		return current_thread;
+		return current_thread->tid;
 	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-volatile int ran = 0;
-int thread_func(void *args) {
-	ran = 1;
-	return 1;
-}
+//volatile int ran = 0;
+ //int thread_func(void *args) {
+ //       ran = 1;
+ //       return 1;
+ //}
 
-int main(void) {
-	RoundRobin->init();
-	tid_t thread_tid = lwp_create(thread_func, NULL);
-	
-	thread t = tid2thread(thread_tid);
+//nt main(void) {
+ //       RoundRobin->init();
+ //       tid_t thread_tid = lwp_create(thread_func, NULL);
+ //       
+ //       thread t = tid2thread(thread_tid);
 
-	printf("tid: %lu\n", t->tid);
-	printf("size %d\n", RoundRobin->qlen());
-	printf("Stacksize:  %zu\n", t->stacksize);
-	printf("Base stack: %p\n", (void *)t->stack);
-	printf("State rsp:  0x%lx\n", t->state.rsp);
-	printf("State rbp:  0x%lx\n", t->state.rbp);
-	printf("State rdi:  0x%lx\n", t->state.rdi);
-	printf("State rsi:  0x%lx\n", t->state.rsi);
-	printf("Status: %u\n", t->status);
+ //       printf("tid: %lu\n", t->tid);
+ //       printf("size %d\n", RoundRobin->qlen());
+ //       printf("Stacksize:  %zu\n", t->stacksize);
+ //       printf("Base stack: %p\n", (void *)t->stack);
+ //       printf("State rsp:  0x%lx\n", t->state.rsp);
+ //       printf("State rbp:  0x%lx\n", t->state.rbp);
+ //       printf("State rdi:  0x%lx\n", t->state.rdi);
+ //       printf("State rsi:  0x%lx\n", t->state.rsi);
+ //       printf("Status: %u\n", t->status);
 
-	if (t->lib_one == NULL & t->lib_two == NULL & t->sched_one == NULL & t->sched_two == NULL & t->exited == NULL) {
-		printf("true\n");
-	} else {
-		printf("false\n");
-	}
+ //       if (t->lib_one == NULL & t->lib_two == NULL & t->sched_one == NULL & t->sched_two == NULL & t->exited == NULL) {
+ //       	printf("true\n");
+ //       } else {
+ //       	printf("false\n");
+ //       }
 
+ //       if (thread_tid == NO_THREAD) {
+ //       	printf("lwp create failed\n");
 
+ //       }
+ //       if (ran == 1) {
+ //       	printf("PASS\n");
+ //       } else {
+ //       	printf("FAILED\n");
+ //       }
 
-
-
-
-	if (thread_tid == NO_THREAD) {
-		printf("lwp create failed\n");
-
-	}
-	if (ran == 1) {
-		printf("PASS\n");
-	} else {
-		printf("FAILED\n");
-	}
-
-	return 0;
-}
+ //       return 0;
+ //}
