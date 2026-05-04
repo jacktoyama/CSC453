@@ -15,7 +15,6 @@ static scheduler current_scheduler = NULL;
 unsigned long t_num = 1;
 
 DoubleLinkedList toTerminate;
-DoubleLinkedList_init(&toTerminate);
 
 
 /* LWP Library */
@@ -109,6 +108,11 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	unsigned long *s_ptr =  (unsigned long *)((char *)t->stack + t->stacksize); // top of stack (end of the allocated region)
 	s_ptr = (unsigned long *)((unsigned long)s_ptr & ~(unsigned long)0xF);
 
+	
+	*--s_ptr = 0;
+	*--s_ptr = (unsigned long)lwp_wrap;
+	*--s_ptr = 0;
+
 	t->state.rsi = (unsigned long)args;
 	t->state.rdi = (unsigned long)fun;
 	t->state.rbp = (unsigned long)s_ptr;
@@ -124,6 +128,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->exited = NULL;
 
 	current_scheduler->admit(t); 					// Add thread to the queue
+	printf("I got here!\n");
 	return t->tid;
 }
 
@@ -135,14 +140,15 @@ void lwp_yield(void) {
 	thread new_thread = current_scheduler->next(); // Grab the new thread
 	if (new_thread == NULL) {
 		fprintf(stderr, "ERROR: no new thread!\n");
-		exit(LWPTERMSTAT(new_thread->status));
+		//exit(LWPTERMSTAT(new_thread->status));
+		exit(LWPTERMSTAT(old_thread->status));
 	}
 
 	// Now current thread is the new thread
 	current_thread = new_thread;
 	
+	printf("Before yield swap_rfile: I got here!\n");
 	swap_rfiles(&old_thread->state, &new_thread->state);
-
 }
 
 // -----lwp_start()------
@@ -150,9 +156,11 @@ void lwp_start(void) {
 	// Start the lwp system. 
 	// Converts the calling thread into a LWP
 	// Yields to whichever thread the scheduler choose
-	scheduler start_scheduler = lwp_get_scheduler(); // get the current scheduler and turn it into an LWP		
+	scheduler start_scheduler = lwp_get_scheduler(); // get the current scheduler and turn it into an LWP
+	DoubleLinkedList_init(&toTerminate);
 
-	// Original calling thread - No need to init a stack because it already has one.
+	printf("start: I got here!\n");
+	//Original calling thread - No need to init a stack because it already has one.
 	thread original_thread = malloc(sizeof(context));
 	original_thread->tid = t_num++;
 	original_thread->stack = NULL;
@@ -165,14 +173,18 @@ void lwp_start(void) {
 	original_thread->sched_two = NULL;
 	original_thread->exited = NULL;
 	
-	swap_rfiles(NULL, &original_thread->state);
+	printf("Before swap_rfile: I got here!\n");
+	swap_rfiles(&original_thread->state, NULL);
+	printf("After swap_rfile: I got here!\n");
 	
 	// Current thread is now officially the main thread
-	current_thread = original_thread; 
-	
+	current_thread = original_thread; 	
+	printf("After swap_rfile: I got here!\n");
+
 	// Add the OG thread to the scheduler (TID should be 1)
-	start_scheduler->admit(original_thread);
-	
+	start_scheduler->admit(original_thread);	
+	printf("After swap_rfile: I got here!\n");
+
 	// Yield
 	lwp_yield();
 }
