@@ -237,13 +237,7 @@ void lwp_start(void) {
 tid_t lwp_wait(int *status) {
 	thread terminatedThread; // Initiate a thread variable
 
-	// SITUATION #1	
-	// If no active threads to terminate, then return no thread
-	if (current_scheduler->qlen() <= 1) {
-		return NO_THREAD;
-	}
-
-	// SITUATION #2
+	// SITUATION #1
 	// If there's a terminated thread / non-blocking
 	if (!DoubleLinkedList_is_empty(&toTerminate)) {
 		terminatedThread = DoubleLinkedList_remove_front(&toTerminate); // grab the first terminated thread
@@ -263,6 +257,12 @@ tid_t lwp_wait(int *status) {
 		free(terminatedThread);
 		return tid2reap; // return status of a fully executed terminated thread
 	}	
+
+	// SITUATION #2 (Exception to Situation #3)
+	// If no active threads to terminate, then return no thread
+	if (current_scheduler->qlen() <= 1) {
+		return NO_THREAD;
+	}
 	
 	// SITUATION #3
 	// ----- Wait for some future lwp_exit() hands it a dead thread
