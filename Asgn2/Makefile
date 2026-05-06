@@ -1,6 +1,6 @@
 CC 	= gcc
 
-CFLAGS  = -Wall -g -I .
+CFLAGS  = -Wall -g -I.c -Iinclude -Isrc
 
 LD 	= gcc
 
@@ -30,26 +30,26 @@ allclean: clean
 clean:	
 	rm -f $(OBJS) *~ TAGS
 
-snakes: randomsnakes.o libLWP.a libsnakes.a
-	$(LD) $(LDFLAGS) -o snakes randomsnakes.o -L. -lncurses -lsnakes -lLWP
+snakes: demos/randomsnakes.o libLWP.a
+	$(LD) $(LDFLAGS) -o snakes demos/randomsnakes.o -Llib64 -L. -lncurses -lsnakes -lLWP
 
-hungry: hungrysnakes.o libLWP.a libsnakes.a
-	$(LD) $(LDFLAGS) -o hungry hungrysnakes.o -L. -lncurses -lsnakes -lLWP
+hungry: demos/hungrysnakes.o libLWP.a libLWP.a
+	$(LD) $(LDFLAGS) -o hungry demos/hungrysnakes.o -Llib64 -L. -lncurses -lsnakes -lLWP
 
-nums: numbersmain.o libLWP.a 
-	$(LD) $(LDFLAGS) -o nums numbersmain.o -L. -lLWP
+nums: demos/numbersmain.o libLWP.a 
+	$(LD) $(LDFLAGS) -o nums demos/numbersmain.o -Llib64 -L. -lLWP
 
-hungrysnakes.o: lwp.h snakes.h
+hungrysnakes.o: include/lwp.h include/snakes.h
 
-randomsnakes.o: lwp.h snakes.h
+randomsnakes.o: include/lwp.h include/snakes.h
 
-numbermain.o: lwp.h
+numbersmain.o: include/lwp.h
 
-libLWP.a: lwp.c rr.c util.c
-	gcc -c rr.c util.c lwp.c magic64.S 
-	ar r libLWP.a util.o lwp.o rr.o magic64.o
-	rm lwp.o
+libLWP.a: src/lwp.c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/magic64.S
+	$(CC) $(CFLAGS) -Iinclude -Isrc -c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/lwp.c src/magic64.S 
+	ar r libLWP.a util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
+	rm -rf lwp.o RoundRobin.o DoubleLinkedList.o util.o magic64.o
 
-submission: lwp.c rr.c util.c Makefile README
-	tar -cf project2_submission.tar lwp.c rr.c Makefile README
+submission: src/lwp.c src/RoundRobin.c demos/util.c Makefile README
+	tar -cf project2_submission.tar lwp.c RoundRobin.c Makefile README
 	gzip project2_submission.tar

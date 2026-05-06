@@ -14,8 +14,8 @@ static thread current_thread = NULL;
 static scheduler current_scheduler = NULL;
 unsigned long t_num = 1;
 
-DoubleLinkedList toTerminate;
-
+static DoubleLinkedList toTerminate;   // threads that terminated
+static DoubleLinkedList toWait;	// threads blocked in lwp_wait()
 
 /* LWP Library */
 
@@ -31,14 +31,21 @@ static void lwp_wrap(lwpfun fun, void *arg) {
 
 // -----lwp_create()-----
 tid_t lwp_create(lwpfun fun, void *args) {
+	if (current_scheduler == NULL) {
+		current_scheduler = RoundRobin;
+		if (current_scheduler->init != NULL) {
+			current_scheduler->init();
+		}
+	}
+
 	struct rlimit lim;
 
 	// Find stack size	
 	long page_size = sysconf(_SC_PAGE_SIZE);
 	if (page_size == -1) {
 		fprintf(stderr, "Error: sysconf failed!\n");
-	} else {
-		printf("System page size: %ld bytes\n", page_size);
+	//} else {
+	//	printf("System page size: %ld bytes\n", page_size);
 	}
 
 	// Grab stack size resource limit
@@ -48,7 +55,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 		if (soft_limit == RLIM_INFINITY) {
 			soft_limit = 8388608; // 8MB bytes	
 		}
-		printf("Soft limit: %ld\n", soft_limit);
+		//printf("Soft limit: %ld\n", soft_limit);
 	} else {
 		fprintf(stderr, "Error: getrlimit failed!\n");
 	}
@@ -128,8 +135,45 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->exited = NULL;
 
 	current_scheduler->admit(t); 					// Add thread to the queue
-	//printf("I got here!\n");
 	return t->tid;
+}
+
+
+// -----lwp_exit()------
+void lwp_exit(int exitval) {
+	thread exited_thread = current_thread;
+
+	// Only use lower 8 bits of exitval for exit code
+	int status = exitval & 0xFF;
+
+	// Mark thread as terminated
+	exited_thread->status = MKTERMSTAT(LWP_TERM, status);
+	
+	// Removeq from current scheduler 
+	current_scheduler->remove(exited_thread); // dead threads should not run again
+
+	// if another thread is waiting for it, wake it up
+	if (!DoubleLinkedList_is_empty(&toWait)) { // if not empty
+		thread thread2wait = DoubleLinkedList_remove_front(&toWait); // Grab the first in list
+		thread2wait->exited = exited_thread; // pass this dead thread
+		current_scheduler->admit(thread2wait);
+	} else {
+		// No processes waiting, so terminate 
+		DoubleLinkedList_push_back(&toTerminate, exited_thread);
+	}
+	
+	// Switch to another thread
+	lwp_yield();  	
+}
+
+// -----lwp_gettid-----
+tid_t lwp_gettid(void) {
+	if (current_thread == NULL) {
+		return NO_THREAD;
+	}
+	else {
+		return current_thread->tid;
+	}
 }
 
 // -----lwp_yield-----
@@ -139,7 +183,7 @@ void lwp_yield(void) {
 	
 	thread new_thread = current_scheduler->next(); // Grab the new thread
 	if (new_thread == NULL) {
-		fprintf(stderr, "ERROR: no new thread!\n");
+		//fprintf(stderr, "ERROR: no new thread!\n");
 		//exit(LWPTERMSTAT(new_thread->status));
 		exit(LWPTERMSTAT(old_thread->status));
 	}
@@ -147,7 +191,6 @@ void lwp_yield(void) {
 	// Now current thread is the new thread
 	current_thread = new_thread;
 	
-	//printf("Before yield swap_rfile: I got here!\n");
 	swap_rfiles(&old_thread->state, &new_thread->state);
 }
 
@@ -158,10 +201,9 @@ void lwp_start(void) {
 	// Yields to whichever thread the scheduler choose
 	scheduler start_scheduler = lwp_get_scheduler(); // get the current scheduler and turn it into an LWP
 	DoubleLinkedList_init(&toTerminate);
+	DoubleLinkedList_init(&toWait);
 
-	//printf("start: I got here!\n");
-
-	//Original calling thread - No need to init a stack because it already has one.
+	// Creating contexts for original calling thread - No need to init a stack because it already has one.
 	thread original_thread = malloc(sizeof(context));
 	original_thread->tid = t_num++;
 	original_thread->stack = NULL;
@@ -174,40 +216,80 @@ void lwp_start(void) {
 	original_thread->sched_two = NULL;
 	original_thread->exited = NULL;
 	
-	//printf("Before swap_rfile: I got here!\n");
 	swap_rfiles(&original_thread->state, NULL);
-	//printf("After swap_rfile: I got here!\n");
 	
 	// Current thread is now officially the main thread
 	current_thread = original_thread; 	
-	//printf("After swap_rfile: I got here!\n");
 
 	// Add the OG thread to the scheduler (TID should be 1)
 	start_scheduler->admit(original_thread);	
-	//printf("After swap_rfile: I got here!\n");
 
 	// Yield
 	lwp_yield();
 }
 
-// -----lwp_exit()------
-void lwp_exit(int exitval) {
-	// Only use lower 8 bits of exitval
-	int status = exitval & 0xFF;
+// -----lwp_wait-----
+tid_t lwp_wait(int *status) {
+	thread terminatedThread;
+	
+	// If no active threads to terminate, then return no thread
+	if (current_scheduler->qlen() <= 1) {
+		return NO_THREAD;
+	}
 
-	// Mark thread as terminated
-	MKTERMSTAT(LWP_TERM, status);
+	// If there's a terminated thread / non-blocking
+	if (!DoubleLinkedList_is_empty(&toTerminate)) {
+		terminatedThread = DoubleLinkedList_remove_front(&toTerminate); // grab the first terminated thread
+	
+		// reap the oldest one in queue
+		if (status != NULL) {
+			*status = terminatedThread->status;
+		}
 
-	current_scheduler->remove(current_thread);
+		// Grab the terminated thread's tid
+		tid_t tid2reap = terminatedThread->tid;
+		if (terminatedThread->stack != NULL) {
+			munmap(&terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
+		}
 
-	/* Handle any thread blocked in lwp_wait() — if there's a thread sitting on the
- 	 * wait queue waiting for something to terminate, you need to take the oldest one
- 	 * off the wait queue, associate it with this newly terminated thread, and re-admit
- 	 * it to the scheduler with current_scheduler->admit(). 
- 	*/
- 	DoubleLinkedList_push_back(&toTerminate, current_thread);
-	lwp_yield();  	
+		// Prevent memory leaks
+		free(terminatedThread);
+		return tid2reap; // return status of a fully executed terminated thread
+	}	
+	
+
+	// ----- Wait for some future lwp_exit() hands it a dead thread
+	// No terminated thrads, so caller of lwp_wait() block
+	thread waitForThread = current_thread;
+	current_scheduler->remove(waitForThread);
+	DoubleLinkedList_push_back(&toWait, waitForThread);
+	
+	lwp_yield(); // let another thread calls it
+
+	// when resumed, lwp_exit() sets threadToWait->exited
+	terminatedThread = waitForThread->exited; // terminatedThread now the exited thread
+	waitForThread->exited = NULL; // reset the exited thread to NULL now that we have it
+
+	if (terminatedThread == NULL) {
+		return NO_THREAD;
+	}
+
+	// Reap the oldest one
+	if (status != NULL) {
+		*status = terminatedThread->status;
+	}
+
+	// Grab the terminated thread's tid
+	tid_t tid2reap = terminatedThread->tid;
+	if (terminatedThread->stack != NULL) {
+		munmap(&terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
+	}
+	
+	// Free it
+	free(terminatedThread);
+	return tid2reap;
 }
+
 
 // -----tid2thread-----
 thread tid2thread(tid_t t) {
@@ -262,55 +344,3 @@ scheduler lwp_get_scheduler(void) {
 	return current_scheduler;
 }
 
-// -----lwp_gettid-----
-tid_t lwp_gettid(void) {
-	if (current_thread == NULL) {
-		return NO_THREAD;
-	}
-	else {
-		return current_thread->tid;
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-//volatile int ran = 0;
- //int thread_func(void *args) {
- //       ran = 1;
- //       return 1;
- //}
-
-//nt main(void) {
- //       RoundRobin->init();
- //       tid_t thread_tid = lwp_create(thread_func, NULL);
- //       
- //       thread t = tid2thread(thread_tid);
-
- //       printf("tid: %lu\n", t->tid);
- //       printf("size %d\n", RoundRobin->qlen());
- //       printf("Stacksize:  %zu\n", t->stacksize);
- //       printf("Base stack: %p\n", (void *)t->stack);
- //       printf("State rsp:  0x%lx\n", t->state.rsp);
- //       printf("State rbp:  0x%lx\n", t->state.rbp);
- //       printf("State rdi:  0x%lx\n", t->state.rdi);
- //       printf("State rsi:  0x%lx\n", t->state.rsi);
- //       printf("Status: %u\n", t->status);
-
- //       if (t->lib_one == NULL & t->lib_two == NULL & t->sched_one == NULL & t->sched_two == NULL & t->exited == NULL) {
- //       	printf("true\n");
- //       } else {
- //       	printf("false\n");
- //       }
-
- //       if (thread_tid == NO_THREAD) {
- //       	printf("lwp create failed\n");
-
- //       }
- //       if (ran == 1) {
- //       	printf("PASS\n");
- //       } else {
- //       	printf("FAILED\n");
- //       }
-
- //       return 0;
- //}

@@ -186,7 +186,7 @@ void DoubleLinkedList_remove_thread(DoubleLinkedList *list, thread t) {
 void DoubleLinkedList_rotate_left(DoubleLinkedList *list) {
 	thread t;
 
-	if (list == NULL | list->size == 0) {
+	if (list == NULL || list->size == 0) {
 		return;
 	}
 
@@ -220,7 +220,7 @@ void DoubleLinkedList_clear(DoubleLinkedList *list) {
 
 // Contains
 int DoubleLinkedList_contains(DoubleLinkedList *list, thread t) {
-	if (list == NULL | t == NULL) {
+	if (list == NULL || t == NULL) {
 		return 0;
 	}
 

@@ -32,6 +32,18 @@ int main(void) {
 	lwp_create(thread2, NULL); // take thread2 function with NULL arg
 	lwp_create(thread_func, (void *)42);
 	lwp_start(); // start the LWP system
+
+
+	int status;
+	while (1) {
+		tid_t tid = lwp_wait(&status);
+		if (tid == NO_THREAD) {
+			break;
+		}
+
+		// Else
+		printf("Thread %lu exited with %d\n", tid, status);
+	}
 	return 0;
 }
 

@@ -20,7 +20,7 @@ typedef struct DoubleLinkedList {
 } DoubleLinkedList;
 
 // Unlink
-static void DoubleLinkedList_unlink(thread t);
+//void DoubleLinkedList_unlink(thread t);
 
 // DLL Operations
 void DoubleLinkedList_init(DoubleLinkedList *list);
