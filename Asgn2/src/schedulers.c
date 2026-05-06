@@ -27,7 +27,7 @@ int main(void) {
 	int val = 42;
 
 	// Start the scheduler
-	lwp_set_scheduler(RoundRobin); // RR is the main scheduler 	
+	//lwp_set_scheduler(RoundRobin); // RR is the main scheduler 	
 	lwp_create(thread1, NULL); // take thread1 function with NULL arg
 	lwp_create(thread2, NULL); // take thread2 function with NULL arg
 	lwp_create(thread_func, (void *)42);

@@ -12,7 +12,7 @@
 // Global variables
 static thread current_thread = NULL;
 static scheduler current_scheduler = NULL;
-unsigned long t_num = 1;
+unsigned long t_num = 10;
 
 static DoubleLinkedList toTerminate;   // threads that terminated
 static DoubleLinkedList toWait;	// threads blocked in lwp_wait()
@@ -31,6 +31,7 @@ static void lwp_wrap(lwpfun fun, void *arg) {
 
 // -----lwp_create()-----
 tid_t lwp_create(lwpfun fun, void *args) {
+	// Default scheduling is Roundrobin
 	if (current_scheduler == NULL) {
 		current_scheduler = RoundRobin;
 		if (current_scheduler->init != NULL) {
@@ -38,9 +39,8 @@ tid_t lwp_create(lwpfun fun, void *args) {
 		}
 	}
 
-	struct rlimit lim;
-
 	// Find stack size	
+	struct rlimit lim;
 	long page_size = sysconf(_SC_PAGE_SIZE);
 	if (page_size == -1) {
 		fprintf(stderr, "Error: sysconf failed!\n");
@@ -48,7 +48,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	//	printf("System page size: %ld bytes\n", page_size);
 	}
 
-	// Grab stack size resource limit
+	// Grab stack size resource soft limit
 	long soft_limit;
 	if (getrlimit(RLIMIT_STACK, &lim) == 0) {
 		soft_limit = (long)lim.rlim_cur; // Get soft litmit of stack		
@@ -61,7 +61,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	}
 
 	// Round page size in case other machines don't have the exact 8Mb bytes
-	long rounded_stacksize = ((soft_limit + page_size -1) / page_size ) * page_size;
+	long rounded_stacksize = ((soft_limit + page_size - 1) / page_size ) * page_size;
 		
 	// NOTE: mmap returns the start of the mapped region; aka lowest addy/base/bottom of stack).
 	// Stack grows downward (high address to low address)
@@ -71,7 +71,8 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	if (t == NULL) {
 		return NO_THREAD;
 	}
-
+	
+	// Create a stack frame for it
 	t->tid = t_num++;
 	t->stack = mmap(NULL, rounded_stacksize, PROT_READ | PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK, -1, 0);	
 	if (t->stack == MAP_FAILED) {
@@ -114,7 +115,6 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	// 8388608 and 0x800000 are the same value in memory
 	unsigned long *s_ptr =  (unsigned long *)((char *)t->stack + t->stacksize); // top of stack (end of the allocated region)
 	s_ptr = (unsigned long *)((unsigned long)s_ptr & ~(unsigned long)0xF);
-
 	
 	*--s_ptr = 0;
 	*--s_ptr = (unsigned long)lwp_wrap;
@@ -134,7 +134,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->sched_two = NULL;
 	t->exited = NULL;
 
-	current_scheduler->admit(t); 					// Add thread to the queue
+	current_scheduler->admit(t); 			// Add thread to the queue
 	return t->tid;
 }
 
@@ -230,18 +230,20 @@ void lwp_start(void) {
 
 // -----lwp_wait-----
 tid_t lwp_wait(int *status) {
-	thread terminatedThread;
-	
+	thread terminatedThread; // Initiate a thread variable
+
+	// SITUATION #1	
 	// If no active threads to terminate, then return no thread
 	if (current_scheduler->qlen() <= 1) {
 		return NO_THREAD;
 	}
 
+	// SITUATION #2
 	// If there's a terminated thread / non-blocking
 	if (!DoubleLinkedList_is_empty(&toTerminate)) {
 		terminatedThread = DoubleLinkedList_remove_front(&toTerminate); // grab the first terminated thread
 	
-		// reap the oldest one in queue
+		// Reap the oldest one in queue
 		if (status != NULL) {
 			*status = terminatedThread->status;
 		}
@@ -257,19 +259,19 @@ tid_t lwp_wait(int *status) {
 		return tid2reap; // return status of a fully executed terminated thread
 	}	
 	
-
+	// SITUATION #3
 	// ----- Wait for some future lwp_exit() hands it a dead thread
-	// No terminated thrads, so caller of lwp_wait() block
-	thread waitForThread = current_thread;
-	current_scheduler->remove(waitForThread);
-	DoubleLinkedList_push_back(&toWait, waitForThread);
-	
-	lwp_yield(); // let another thread calls it
+	// No terminated threads, so caller of lwp_wait() block
+	thread waitForThread = current_thread; 			// Set current thread = waitForThread variable
+	current_scheduler->remove(waitForThread); 		// Remove this waitForThread from the current scheduler
+	DoubleLinkedList_push_back(&toWait, waitForThread); 	// Put waitForThread into toWait DLL queue
+	lwp_yield(); 						// Let another thread calls it
 
-	// when resumed, lwp_exit() sets threadToWait->exited
-	terminatedThread = waitForThread->exited; // terminatedThread now the exited thread
-	waitForThread->exited = NULL; // reset the exited thread to NULL now that we have it
+	// When resumed, lwp_exit() sets threadToWait->exited
+	terminatedThread = waitForThread->exited; 		// terminatedThread now the exited thread
+	waitForThread->exited = NULL; 				// reset the exited thread to NULL now that we have it
 
+	// No thread then just exit 
 	if (terminatedThread == NULL) {
 		return NO_THREAD;
 	}
@@ -307,7 +309,6 @@ void lwp_set_scheduler(scheduler sched) {
 
 	// Initialize new schedular, if sched is NULL use round robin default
 	if (sched == NULL) {
-		//RoundRobin->init();
 		sched = RoundRobin;
 	} else {
 		sched->init();
@@ -322,9 +323,10 @@ void lwp_set_scheduler(scheduler sched) {
 	if (old_scheduler != NULL) {
 		while(old_scheduler->qlen() > 0) {
 			thread t_temp = old_scheduler->next();
-			if (t_temp == NULL) {
+			if (t_temp == NULL) {				i
 				break;
 			}
+
 	
 			old_scheduler->remove(t_temp);
 			sched->admit(t_temp);
