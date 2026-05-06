@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -161,7 +162,8 @@ void lwp_exit(int exitval) {
 		// No processes waiting, so terminate 
 		DoubleLinkedList_push_back(&toTerminate, exited_thread);
 	}
-	
+
+	printf("exitinng tid %lu status %d\n", exited_thread->tid, status);	
 	// Switch to another thread
 	lwp_yield();  	
 }
@@ -182,6 +184,7 @@ void lwp_yield(void) {
 	thread old_thread = current_thread;
 	
 	thread new_thread = current_scheduler->next(); // Grab the new thread
+	// No new thread, so exit with the old thread's status
 	if (new_thread == NULL) {
 		//fprintf(stderr, "ERROR: no new thread!\n");
 		//exit(LWPTERMSTAT(new_thread->status));
@@ -200,6 +203,8 @@ void lwp_start(void) {
 	// Converts the calling thread into a LWP
 	// Yields to whichever thread the scheduler choose
 	scheduler start_scheduler = lwp_get_scheduler(); // get the current scheduler and turn it into an LWP
+	
+	// Initialize queues used for holding and waiting forterminated threads
 	DoubleLinkedList_init(&toTerminate);
 	DoubleLinkedList_init(&toWait);
 
@@ -286,6 +291,8 @@ tid_t lwp_wait(int *status) {
 	if (terminatedThread->stack != NULL) {
 		munmap(&terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
 	}
+
+	printf("terminated size in wait: %d\n",  DoubleLinkedList_size(&toTerminate));	
 	
 	// Free it
 	free(terminatedThread);
@@ -323,7 +330,7 @@ void lwp_set_scheduler(scheduler sched) {
 	if (old_scheduler != NULL) {
 		while(old_scheduler->qlen() > 0) {
 			thread t_temp = old_scheduler->next();
-			if (t_temp == NULL) {				i
+			if (t_temp == NULL) {
 				break;
 			}
 

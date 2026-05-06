@@ -27,23 +27,30 @@ int main(void) {
 	int val = 42;
 
 	// Start the scheduler
-	//lwp_set_scheduler(RoundRobin); // RR is the main scheduler 	
+	lwp_set_scheduler(RoundRobin); // RR is the main scheduler 	
 	lwp_create(thread1, NULL); // take thread1 function with NULL arg
 	lwp_create(thread2, NULL); // take thread2 function with NULL arg
 	lwp_create(thread_func, (void *)42);
 	lwp_start(); // start the LWP system
-
-
-	int status;
+	
+	//scheduler curr = lwp_get_scheduler();
+	
+	// Wait for other lwps
 	while (1) {
-		tid_t tid = lwp_wait(&status);
+		int status, num; 
+		tid_t tid;
+		tid = lwp_wait(&status);
+		num = LWPTERMSTAT(status);
 		if (tid == NO_THREAD) {
 			break;
 		}
 
-		// Else
-		printf("Thread %lu exited with %d\n", tid, status);
+		printf("I was here\n");
+		printf("Thread %ld exited with %d\n", tid, num);
 	}
+
+	printf("back from lwps\n");
+	lwp_exit(0);
 	return 0;
 }
 
