@@ -33,7 +33,7 @@ clean:
 snakes: demos/randomsnakes.o libLWP.a
 	$(LD) $(LDFLAGS) -o snakes demos/randomsnakes.o -Llib64 -L. -lncurses -lsnakes -lLWP
 
-hungry: demos/hungrysnakes.o libLWP.a libLWP.a
+hungry: demos/hungrysnakes.o libLWP.a
 	$(LD) $(LDFLAGS) -o hungry demos/hungrysnakes.o -Llib64 -L. -lncurses -lsnakes -lLWP
 
 nums: demos/numbersmain.o libLWP.a 
@@ -49,6 +49,11 @@ libLWP.a: src/lwp.c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/mag
 	$(CC) $(CFLAGS) -Iinclude -Isrc -c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/lwp.c src/magic64.S 
 	ar r libLWP.a util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
 	rm -rf lwp.o RoundRobin.o DoubleLinkedList.o util.o magic64.o
+
+liblwp.so: src/lwp.c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/magic64.S
+	$(CC) -fPIC $(CFLAGS) -c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/lwp.c src/magic64.S
+	$(CC) -shared -o liblwp.so util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
+	rm -f util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
 
 submission: src/lwp.c src/RoundRobin.c demos/util.c Makefile README
 	tar -cf project2_submission.tar lwp.c RoundRobin.c Makefile README
