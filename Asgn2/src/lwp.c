@@ -7,9 +7,9 @@
 #include <sys/mman.h>
 
 #include <sys/resource.h>
-#include "RoundRobin.h"
-#include "lwp.h"
-#include "DoubleLinkedList.h"
+#include "../include/RoundRobin.h"
+#include "../include/lwp.h"
+#include "../include/DoubleLinkedList.h"
 
 // Global variables
 static thread current_thread = NULL;

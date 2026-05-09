@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "lwp.h"
-#include "DoubleLinkedList.h"
+#include "../include/lwp.h"
+#include "../include/DoubleLinkedList.h"
 
 /* Round Robin API Library
  * 

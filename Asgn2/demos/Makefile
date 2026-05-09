@@ -1,6 +1,6 @@
 CC 	= gcc
 
-CFLAGS  = -Wall -g -I. -I../include -I../src
+CFLAGS  = -Wall -g -I. -I/include -I/src
 
 LD 	= gcc
 
@@ -41,19 +41,19 @@ hungry: hungrysnakes.o libLWP.a libsnakes.a
 nums: numbersmain.o libLWP.a 
 	$(LD) $(LDFLAGS) -o nums numbersmain.o -L. -lLWP
 
-hungrysnakes.o: ../include/lwp.h ../include/snakes.h
+hungrysnakes.o: include/lwp.h include/snakes.h
 
-randomsnakes.o: ../include/lwp.h ../include/snakes.h
+randomsnakes.o: include/lwp.h include/snakes.h
 
-numbersmain.o: ../include/lwp.h
+numbersmain.o: include/lwp.h
 
 libLWP.a: lwp.c rr.c util.c
 	gcc -c rr.c util.c lwp.c magic64.S 
 	ar r libLWP.a util.o lwp.o rr.o magic64.o
 	rm lwp.o
 
-liblwp.so: ../src/lwp.c ../src/RoundRobin.c ../src/DoubleLinkedList.c util.c ../src/magic64.S
-	$(CC) -fPIC $(CFLAGS) -c ../src/RoundRobin.c ../src/DoubleLinkedList.c util.c ../src/lwp.c ../src/magic64.S
+liblwp.so: src/lwp.c src/RoundRobin.c src/DoubleLinkedList.c util.c src/magic64.S
+	$(CC) -fPIC $(CFLAGS) -c src/RoundRobin.c src/DoubleLinkedList.c util.c src/lwp.c src/magic64.S
 	$(CC) -shared -o liblwp.so util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
 	rm -f util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
 
