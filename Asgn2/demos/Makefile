@@ -41,11 +41,11 @@ hungry: hungrysnakes.o libLWP.a libsnakes.a
 nums: numbersmain.o libLWP.a 
 	$(LD) $(LDFLAGS) -o nums numbersmain.o -L. -lLWP
 
-hungrysnakes.o: lwp.h snakes.h
+hungrysnakes.o: ../include/lwp.h ../include/snakes.h
 
-randomsnakes.o: lwp.h snakes.h
+randomsnakes.o: ../include/lwp.h ../include/snakes.h
 
-numbersmain.o: lwp.h
+numbersmain.o: ../include/lwp.h
 
 libLWP.a: lwp.c rr.c util.c
 	gcc -c rr.c util.c lwp.c magic64.S 
