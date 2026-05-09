@@ -350,45 +350,79 @@ thread tid2thread(tid_t t) {
 	return NULL;
 }
 
-// -----lwp_set_scheduler-----
-void lwp_set_scheduler(scheduler sched) {
-	scheduler old_scheduler = current_scheduler;
+// // -----lwp_set_scheduler-----
+// void lwp_set_scheduler(scheduler sched) {
+// 	scheduler old_scheduler = current_scheduler;
 
-	// Initialize new schedular, if sched is NULL use round robin default
-	if (sched == NULL) {
-		sched = RoundRobin; // default scheduler
-	}
+// 	// Initialize new schedular, if sched is NULL use round robin default
+// 	if (sched == NULL) {
+// 		sched = RoundRobin; // default scheduler
+// 	}
 
-	// Initialize schedule if it's not active yet
-	if (sched->init != NULL) { 
-		sched->init(); 
-	}
-	// If the old scheduler is already the one we're using, then do nothing
-	if (old_scheduler == sched) {
-		return;
-	}
+// 	// Initialize schedule if it's not active yet
+// 	if (sched->init != NULL) { 
+// 		sched->init(); 
+// 	}
+// 	// If the old scheduler is already the one we're using, then do nothing
+// 	if (old_scheduler == sched) {
+// 		return;
+// 	}
 	
-	// If a scheduler is already active, admit all the threads then shutdown the old scheduler cleanly
-	if (old_scheduler != NULL) {
-		while(old_scheduler->qlen() > 0) {
-			thread t_temp = old_scheduler->next();
-			if (t_temp == NULL) {
-				return;
-			}
+// 	// If a scheduler is already active, admit all the threads then shutdown the old scheduler cleanly
+// 	if (old_scheduler != NULL) {
+// 		while(old_scheduler->qlen() > 0) {
+// 			thread t_temp = old_scheduler->next();
+// 			if (t_temp == NULL) {
+// 				return;
+// 			}
 
-			old_scheduler->remove(t_temp);
-			sched->admit(t_temp);
-		}
+// 			old_scheduler->remove(t_temp);
+// 			sched->admit(t_temp);
+// 		}
 		
-		// Clean up
-		if (old_scheduler->shutdown != NULL) { 
-			old_scheduler->shutdown();
-		}
+// 		// Clean up
+// 		if (old_scheduler->shutdown != NULL) { 
+// 			old_scheduler->shutdown();
+// 		}
+// 	}
+
+// 	// Set the new scheduler to be the current one
+// 	current_scheduler = sched;
+// 	return;
+// }
+
+void lwp_set_scheduler(scheduler sched) {
+    scheduler old_scheduler = current_scheduler;
+
+    // Default to RoundRobin if NULL
+    if (sched == NULL) {
+        sched = RoundRobin;
+    }
+
+    // If already using this scheduler, do nothing
+    if (old_scheduler == sched) {
+        return;
+    }
+
+    // Initialize the new scheduler ONLY now (not before the same-check)
+    if (sched->init != NULL) {
+        sched->init();
+    }
+
+    // Transfer all threads from old scheduler to new one
+    if (old_scheduler != NULL) {
+    	thread t_temp;
+    	while ((t_temp = old_scheduler->next()) != NULL) {
+        	old_scheduler->remove(t_temp);
+        	sched->admit(t_temp);
+    	}
+
+    	if (old_scheduler->shutdown != NULL) {
+        	old_scheduler->shutdown();
+    	}
 	}
 
-	// Set the new scheduler to be the current one
-	current_scheduler = sched;
-	return;
+    current_scheduler = sched;
 }
 
 // -----lwp_get_scheduler-----
