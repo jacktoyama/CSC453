@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "lwp.h"
-#include "DoubleLinkedList.h"
+#include "../include/lwp.h"
+#include "../include/DoubleLinkedList.h"
 
 /* Round Robin API Library
  * 
@@ -35,9 +35,6 @@ static void rr_admit(thread new) {
 		return;
 	}	
 	
-	// if (!DoubleLinkedList_contains(&rr_list, new)) {
-	// 	DoubleLinkedList_push_back(&rr_list, new);
-	// }
 	DoubleLinkedList_push_back(&rr_list, new);
 }
 

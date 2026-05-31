@@ -33,24 +33,26 @@ int main(void) {
 	lwp_create(thread_func, (void *)42);
 	lwp_start(); // start the LWP system
 	
+	thread get_thread = tid2thread(0);
+	printf("thread %lu\n", get_thread->tid);
 	//scheduler curr = lwp_get_scheduler();
 	
 	// Wait for other lwps
-	while (1) {
-		int status, num; 
-		tid_t tid;
-		tid = lwp_wait(&status);
-		num = LWPTERMSTAT(status);
-		if (tid == NO_THREAD) {
-			break;
-		}
-
-		printf("I was here\n");
-		printf("Thread %ld exited with %d\n", tid, num);
-	}
-
-	printf("back from lwps\n");
-	lwp_exit(0);
+//	while (1) {
+//		int status, num; 
+//		tid_t tid;
+//		tid = lwp_wait(&status);
+//		num = LWPTERMSTAT(status);
+//		if (tid == NO_THREAD) {
+//			break;
+//		}
+//
+//		printf("I was here\n");
+//		printf("Thread %ld exited with %d\n", tid, num);
+//	}
+//
+	//printf("back from lwps\n");
+	//lwp_exit(0);
 	return 0;
 }
 

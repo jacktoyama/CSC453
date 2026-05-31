@@ -1,55 +1,36 @@
-CC 	= gcc
+CC = gcc
+CFLAGS = -Wall -g -I. -Iinclude -Isrc -Idemos
+LD = gcc
+LDFLAGS = -Wall -g -Llib64 -L. -Wl,-rpath,lib64
 
-CFLAGS  = -Wall -g -I.c -Iinclude -Isrc
+PROGS = snakes hungry nums
 
-LD 	= gcc
+all: $(PROGS)
 
-LDFLAGS  = -Wall -g 
+snakes: randomsnakes.o libLWP.a
+	$(LD) $(LDFLAGS) -o $@ $< -lsnakes -lncurses -lLWP
 
-PROGS	= snakes nums hungry
+hungry: hungrysnakes.o libLWP.a
+	$(LD) $(LDFLAGS) -o $@ $< -lsnakes -lncurses -lLWP
 
-SNAKEOBJS  = randomsnakes.o 
+nums: numbersmain.o libLWP.a
+	$(LD) $(LDFLAGS) -o $@ $< -lLWP
 
-HUNGRYOBJS = hungrysnakes.o 
+randomsnakes.o: demos/randomsnakes.c include/lwp.h include/snakes.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
-NUMOBJS    = numbersmain.o
+hungrysnakes.o: demos/hungrysnakes.c include/lwp.h include/snakes.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
-OBJS	= $(SNAKEOBJS) $(HUNGRYOBJS) $(NUMOBJS) 
+numbersmain.o: demos/numbersmain.c include/lwp.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
-SRCS	= randomsnakes.c numbersmain.c hungrysnakes.c
+libLWP.a: src/RoundRobin.c src/DoubleLinkedList.c src/util.c src/lwp.c src/magic64.S
+	$(CC) $(CFLAGS) -c src/RoundRobin.c src/DoubleLinkedList.c src/util.c src/lwp.c src/magic64.S
+	ar rcs $@ RoundRobin.o DoubleLinkedList.o util.o lwp.o magic64.o
+	rm -f RoundRobin.o DoubleLinkedList.o util.o lwp.o magic64.o
 
-HDRS	= 
+clean:
+	rm -f $(PROGS) randomsnakes.o hungrysnakes.o numbersmain.o libLWP.a RoundRobin.o DoubleLinkedList.o util.o lwp.o magic64.o
 
-EXTRACLEAN = core $(PROGS)
-
-all: 	$(PROGS)
-
-allclean: clean
-	@rm -f $(EXTRACLEAN)
-
-clean:	
-	rm -f $(OBJS) *~ TAGS
-
-snakes: demos/randomsnakes.o libLWP.a
-	$(LD) $(LDFLAGS) -o snakes demos/randomsnakes.o -Llib64 -L. -lncurses -lsnakes -lLWP
-
-hungry: demos/hungrysnakes.o libLWP.a libLWP.a
-	$(LD) $(LDFLAGS) -o hungry demos/hungrysnakes.o -Llib64 -L. -lncurses -lsnakes -lLWP
-
-nums: demos/numbersmain.o libLWP.a 
-	$(LD) $(LDFLAGS) -o nums demos/numbersmain.o -Llib64 -L. -lLWP
-
-hungrysnakes.o: include/lwp.h include/snakes.h
-
-randomsnakes.o: include/lwp.h include/snakes.h
-
-numbersmain.o: include/lwp.h
-
-libLWP.a: src/lwp.c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/magic64.S
-	$(CC) $(CFLAGS) -Iinclude -Isrc -c src/RoundRobin.c src/DoubleLinkedList.c demos/util.c src/lwp.c src/magic64.S 
-	ar r libLWP.a util.o lwp.o RoundRobin.o DoubleLinkedList.o magic64.o
-	rm -rf lwp.o RoundRobin.o DoubleLinkedList.o util.o magic64.o
-
-submission: src/lwp.c src/RoundRobin.c demos/util.c Makefile README
-	tar -cf project2_submission.tar lwp.c RoundRobin.c Makefile README
-	gzip project2_submission.tar
+.PHONY: all clean

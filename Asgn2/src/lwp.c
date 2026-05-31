@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#define MAX_THREADS 65536
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,17 +7,27 @@
 #include <sys/mman.h>
 
 #include <sys/resource.h>
-#include "RoundRobin.h"
-#include "lwp.h"
-#include "DoubleLinkedList.h"
+#include "../include/RoundRobin.h"
+#include "../include/lwp.h"
+#include "../include/DoubleLinkedList.h"
 
 // Global variables
 static thread current_thread = NULL;
 static scheduler current_scheduler = NULL;
-unsigned long t_num = 10;
+unsigned long t_num = 1;
+static thread TrackThreadsList[MAX_THREADS]; //  list to track threads for tid2thread
+
 
 static DoubleLinkedList toTerminate;   // threads that terminated
 static DoubleLinkedList toWait;	// threads blocked in lwp_wait()
+
+// Suport function
+static void TrackThread(thread t) {
+	if (t->tid < MAX_THREADS) {
+		TrackThreadsList[t->tid] = t;
+	}
+}
+
 
 /* LWP Library */
 
@@ -32,13 +43,14 @@ static void lwp_wrap(lwpfun fun, void *arg) {
 
 // -----lwp_create()-----
 tid_t lwp_create(lwpfun fun, void *args) {
-	// Default scheduling is Roundrobin
+	// Default scheduling is RoundRobin
 	if (current_scheduler == NULL) {
 		current_scheduler = RoundRobin;
 		if (current_scheduler->init != NULL) {
 			current_scheduler->init();
 		}
 	}
+
 
 	// Find stack size	
 	struct rlimit lim;
@@ -57,8 +69,8 @@ tid_t lwp_create(lwpfun fun, void *args) {
 			soft_limit = 8388608; // 8MB bytes	
 		}
 		//printf("Soft limit: %ld\n", soft_limit);
-	} else {
-		fprintf(stderr, "Error: getrlimit failed!\n");
+	//} else {
+	//	fprintf(stderr, "Error: getrlimit failed!\n");
 	}
 
 	// Round page size in case other machines don't have the exact 8Mb bytes
@@ -77,7 +89,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->tid = t_num++;
 	t->stack = mmap(NULL, rounded_stacksize, PROT_READ | PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK, -1, 0);	
 	if (t->stack == MAP_FAILED) {
-		fprintf(stderr, "ERROR: mmap failed!\n");
+		//fprintf(stderr, "ERROR: mmap failed!\n");
 		free(t);
 		return NO_THREAD;
 	}
@@ -117,16 +129,24 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	unsigned long *s_ptr =  (unsigned long *)((char *)t->stack + t->stacksize); // top of stack (end of the allocated region)
 	s_ptr = (unsigned long *)((unsigned long)s_ptr & ~(unsigned long)0xF);
 	
-	*--s_ptr = 0;
-	*--s_ptr = (unsigned long)lwp_wrap;
-	*--s_ptr = 0;
+	// Fake return after wrapper
+	s_ptr = s_ptr - 1; // 0x80100 - 8 = 0x80ff8 Move 8bytes down from tos
+	*s_ptr = 0; // Set value at 0x80ff8 = 0 
+	
+	// Address of lwp_wrap
+    s_ptr = s_ptr - 1;
+	*s_ptr = (unsigned long)lwp_wrap; // store the adddress of lwp_wrap at 0x800ff0
+	
+	// fake old rbp <- saved rbp/rsp point here
+	s_ptr = s_ptr - 1;
+	*s_ptr = 0;
 
 	t->state.rsi = (unsigned long)args;
 	t->state.rdi = (unsigned long)fun;
 	t->state.rbp = (unsigned long)s_ptr;
 	t->state.rsp = (unsigned long)s_ptr;
 	t->state.fxsave = FPU_INIT; 			// Initialize predefined FPU_INIT value
-	t->status = LWP_LIVE; 				// Thread created, now go live
+	t->status =  MKTERMSTAT(LWP_LIVE, 0); 				// Thread created, now go live
 	
 	// New so start out unlinked
 	t->lib_one = NULL; 
@@ -135,6 +155,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	t->sched_two = NULL;
 	t->exited = NULL;
 
+	TrackThread(t);
 	current_scheduler->admit(t); 			// Add thread to the queue
 	return t->tid;
 }
@@ -163,7 +184,6 @@ void lwp_exit(int exitval) {
 		DoubleLinkedList_push_back(&toTerminate, exited_thread);
 	}
 
-	printf("exitinng tid %lu status %d\n", exited_thread->tid, status);	
 	// Switch to another thread
 	lwp_yield();  	
 }
@@ -182,15 +202,23 @@ tid_t lwp_gettid(void) {
 void lwp_yield(void) {
 	// Save the current context
 	thread old_thread = current_thread;
-	
+	//printf("I was here\n");	
 	thread new_thread = current_scheduler->next(); // Grab the new thread
+	
 	// No new thread, so exit with the old thread's status
 	if (new_thread == NULL) {
 		//fprintf(stderr, "ERROR: no new thread!\n");
-		//exit(LWPTERMSTAT(new_thread->status));
+		//xit(LWPTERMSTAT(new_thread->status));
+		//printf("I was here 2\n");
+		//printf("exit code %d\n", LWPTERMSTAT(old_thread->status));	
 		exit(LWPTERMSTAT(old_thread->status));
 	}
 
+	if (new_thread == old_thread) {
+		return;
+	}
+
+	//printf("I was here 3\n");	
 	// Now current thread is the new thread
 	current_thread = new_thread;
 	
@@ -199,11 +227,19 @@ void lwp_yield(void) {
 
 // -----lwp_start()------
 void lwp_start(void) {
+	// if scheduler is not set, intialize it
+	if (current_scheduler == NULL) {
+		current_scheduler = RoundRobin;
+		if (current_scheduler->init != NULL) {
+			current_scheduler->init();
+		}
+	}
+
 	// Start the lwp system. 
 	// Converts the calling thread into a LWP
 	// Yields to whichever thread the scheduler choose
 	scheduler start_scheduler = lwp_get_scheduler(); // get the current scheduler and turn it into an LWP
-	
+
 	// Initialize queues used for holding and waiting forterminated threads
 	DoubleLinkedList_init(&toTerminate);
 	DoubleLinkedList_init(&toWait);
@@ -213,7 +249,7 @@ void lwp_start(void) {
 	original_thread->tid = t_num++;
 	original_thread->stack = NULL;
 	original_thread->stacksize = 0;
-	original_thread->status = LWP_LIVE;
+	original_thread->status = MKTERMSTAT(LWP_LIVE, 0);
 
 	original_thread->lib_one = NULL;
 	original_thread->lib_two = NULL;
@@ -225,9 +261,12 @@ void lwp_start(void) {
 	
 	// Current thread is now officially the main thread
 	current_thread = original_thread; 	
-
+	
 	// Add the OG thread to the scheduler (TID should be 1)
 	start_scheduler->admit(original_thread);	
+
+	// Add thread to track 	
+	TrackThread(original_thread);	
 
 	// Yield
 	lwp_yield();
@@ -249,8 +288,9 @@ tid_t lwp_wait(int *status) {
 
 		// Grab the terminated thread's tid
 		tid_t tid2reap = terminatedThread->tid;
+		TrackThreadsList[terminatedThread->tid] = NULL;
 		if (terminatedThread->stack != NULL) {
-			munmap(&terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
+			munmap(terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
 		}
 
 		// Prevent memory leaks
@@ -264,6 +304,12 @@ tid_t lwp_wait(int *status) {
 		return NO_THREAD;
 	}
 	
+	// SITUATION #2	
+	// If no active threads to terminate, then return no thread
+	if (current_scheduler->qlen() <= 1) {
+		return NO_THREAD;
+	}
+
 	// SITUATION #3
 	// ----- Wait for some future lwp_exit() hands it a dead thread
 	// No terminated threads, so caller of lwp_wait() block
@@ -271,6 +317,8 @@ tid_t lwp_wait(int *status) {
 	current_scheduler->remove(waitForThread); 		// Remove this waitForThread from the current scheduler
 	DoubleLinkedList_push_back(&toWait, waitForThread); 	// Put waitForThread into toWait DLL queue
 	lwp_yield(); 						// Let another thread calls it
+
+
 
 	// When resumed, lwp_exit() sets threadToWait->exited
 	terminatedThread = waitForThread->exited; 		// terminatedThread now the exited thread
@@ -288,11 +336,10 @@ tid_t lwp_wait(int *status) {
 
 	// Grab the terminated thread's tid
 	tid_t tid2reap = terminatedThread->tid;
+	TrackThreadsList[terminatedThread->tid] = NULL;
 	if (terminatedThread->stack != NULL) {
-		munmap(&terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
+		munmap(terminatedThread->stack, terminatedThread->stacksize); // Deallocate stack
 	}
-
-	printf("terminated size in wait: %d\n",  DoubleLinkedList_size(&toTerminate));	
 	
 	// Free it
 	free(terminatedThread);
@@ -302,50 +349,46 @@ tid_t lwp_wait(int *status) {
 
 // -----tid2thread-----
 thread tid2thread(tid_t t) {
-	thread curr_thread = RoundRobin->next();
-	if (curr_thread->tid == t) {
-		return curr_thread;
-	} else {
-		return NULL;
+	if (t != NO_THREAD || t < MAX_THREADS) {
+		return TrackThreadsList[t];
+	
 	}
+	return NULL;
 }
 
 // -----lwp_set_scheduler-----
 void lwp_set_scheduler(scheduler sched) {
-	scheduler old_scheduler = current_scheduler;
+    scheduler old_scheduler = current_scheduler;
 
-	// Initialize new schedular, if sched is NULL use round robin default
-	if (sched == NULL) {
-		sched = RoundRobin;
-	} else {
-		sched->init();
+    // Default to RoundRobin if NULL
+    if (sched == NULL) {
+        sched = RoundRobin;
+    }
+
+    // If already using this scheduler, do nothing
+    if (old_scheduler == sched) {
+        return;
+    }
+
+    // Initialize the new scheduler ONLY now (not before the same-check)
+    if (sched->init != NULL) {
+        sched->init();
+    }
+
+    // Transfer all threads from old scheduler to new one
+    if (old_scheduler != NULL) {
+    	thread t_temp;
+    	while ((t_temp = old_scheduler->next()) != NULL) {
+        	old_scheduler->remove(t_temp);
+        	sched->admit(t_temp);
+    	}
+
+    	if (old_scheduler->shutdown != NULL) {
+        	old_scheduler->shutdown();
+    	}
 	}
 
-	// If the old scheduler is already the one we're using, then do nothing
-	if (old_scheduler == sched) {
-		return;
-	}
-
-	// If a scheduler is already active, admit all the threads then shutdown the old scheduler cleanly
-	if (old_scheduler != NULL) {
-		while(old_scheduler->qlen() > 0) {
-			thread t_temp = old_scheduler->next();
-			if (t_temp == NULL) {
-				break;
-			}
-
-	
-			old_scheduler->remove(t_temp);
-			sched->admit(t_temp);
-		}
-		
-		// Clean up 
-		old_scheduler->shutdown();
-	}
-
-	// Set the new scheduler to be the current one
-	current_scheduler = sched;
-	return;
+    current_scheduler = sched;
 }
 
 // -----lwp_get_scheduler-----

@@ -1,0 +1,19 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <string.h>
+
+#include "libDisk.h"
+
+int openDisk(char *filename, int nBytes) {
+    FILE *disk = fopen(filename, "r");
+	if (disk == NULL) {
+		fprintf(stderr, "ERROR: fopen().\n");
+		exit(1);
+	}
+
+    if (nBytes % BLOCKSIZE != 0) {
+        
+    }
+}

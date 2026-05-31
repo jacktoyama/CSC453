@@ -1,0 +1,235 @@
+=================================================
+TEST 24: Transfer threads between schedulers check for init/shutdown
+
+Create a number of threads, start them running,
+then set_scheduler() and see if they transfer properly.
+
+
+
+
+
+----------
+Reference:
+----------
+init: called on first scheduler
+Creating LWPS
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Launching LWPS
+Admitting new thread to First scheduler
+(first->next())
+    1
+(first->next())
+         2
+(first->next())
+              3
+(first->next())
+                   4
+(first->next())
+                        5
+(first->next())
+Removing thread from First scheduler
+(first->next())
+    1
+(first->next())
+         2
+(first->next())
+              3
+(first->next())
+                   4
+(first->next())
+                        5
+(first->next())
+    1
+(first->next())
+         2
+(first->next())
+              3
+(first->next())
+                   4
+(first->next())
+                        5
+Setting the scheduler.
+init: called on second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+shutdown: called on first scheduler
+(second->next())
+    1
+(second->next())
+         2
+(second->next())
+              3
+(second->next())
+                   4
+(second->next())
+                        5
+(second->next())
+    1
+(second->next())
+         2
+(second->next())
+              3
+(second->next())
+                   4
+(second->next())
+                        5
+(second->next())
+    1
+(second->next())
+         2
+(second->next())
+              3
+(second->next())
+                   4
+(second->next())
+                        5
+(second->next())
+Removing thread from Second scheduler
+Admitting new thread to Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+Admitting new thread to Second scheduler
+(second->next())
+Back from LWPS.
+----------
+Submitted:
+----------
+init: called on first scheduler
+Creating LWPS
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Admitting new thread to First scheduler
+Launching LWPS
+Admitting new thread to First scheduler
+(first->next())
+    1
+(first->next())
+         2
+(first->next())
+              3
+(first->next())
+                   4
+(first->next())
+                        5
+(first->next())
+Removing thread from First scheduler
+(first->next())
+    1
+(first->next())
+         2
+(first->next())
+              3
+(first->next())
+                   4
+(first->next())
+                        5
+(first->next())
+    1
+(first->next())
+         2
+(first->next())
+              3
+(first->next())
+                   4
+(first->next())
+                        5
+Setting the scheduler.
+init: called on second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+(first->next())
+Removing thread from First scheduler
+Admitting new thread to Second scheduler
+shutdown: called on first scheduler
+(second->next())
+    1
+(second->next())
+         2
+(second->next())
+              3
+(second->next())
+                   4
+(second->next())
+                        5
+(second->next())
+    1
+(second->next())
+         2
+(second->next())
+              3
+(second->next())
+                   4
+(second->next())
+                        5
+(second->next())
+    1
+(second->next())
+         2
+(second->next())
+              3
+(second->next())
+                   4
+(second->next())
+                        5
+(second->next())
+Removing thread from Second scheduler
+Admitting new thread to Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+(second->next())
+Removing thread from Second scheduler
+Admitting new thread to Second scheduler
+(second->next())
+Back from LWPS.
+
+---------------------------------
+Differences (< reference > output)
+---------------------------------
+
+59d58
+< (first->next())
+---------
