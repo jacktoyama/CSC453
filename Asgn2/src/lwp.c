@@ -134,7 +134,7 @@ tid_t lwp_create(lwpfun fun, void *args) {
 	*s_ptr = 0; // Set value at 0x80ff8 = 0 
 	
 	// Address of lwp_wrap
-        s_ptr = s_ptr - 1;
+    s_ptr = s_ptr - 1;
 	*s_ptr = (unsigned long)lwp_wrap; // store the adddress of lwp_wrap at 0x800ff0
 	
 	// fake old rbp <- saved rbp/rsp point here
