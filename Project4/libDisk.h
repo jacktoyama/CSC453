@@ -1,3 +1,5 @@
+#define BLOCKSIZE 256
+
 int openDisk(char *filename, int nBytes);
 
 int closeDisk(int disk);
