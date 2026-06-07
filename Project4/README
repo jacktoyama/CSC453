@@ -1,0 +1,11 @@
+INODE BLOCK (256 bytes)
+
+Byte 0   block type (2)
+Byte 1   magic number (0x44)
+Byte 2   next block
+Byte 3   unused
+
+Byte 4-11   filename (8 bytes)
+Byte 12-15  filesize
+Byte 16     first extent block
+17-255      unused

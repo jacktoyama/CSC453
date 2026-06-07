@@ -28,20 +28,20 @@ int openDisk(char *filename, int nBytes) {
 	}
 	
 	// nBytes is not a multiple of BLOCKSIZE check
-    if (nBytes % BLOCKSIZE != 0) {
-        diskSize = nBytes - (nBytes % BLOCKSIZE); // Closest multiple of BLOCKSIZE that is lower than nByte
-		disk = open(filename, O_RDWR | O_CREAT | O_TRUNC, 0666); // O_TRUNC erases data in a file
-		if (disk < 0) {
-			fprintf(stderr, "ERROR: open().\n");
-			return -1;	
-		}
-		if (ftruncate(disk, diskSize) < 0) { // Truncate the disk to diskSize, which is 256 aligned
-			fprintf(stderr, "ERROR: ftruncate().\n");
-			close(disk);
-			return -1;
-		}
-		return disk; // file descriptor 
+	diskSize = nBytes - (nBytes % BLOCKSIZE); // Closest multiple of BLOCKSIZE that is lower than nByte
+	
+	disk = open(filename, O_RDWR | O_CREAT | O_TRUNC, 0666); // O_TRUNC erases data in a file
+	if (disk < 0) {
+		fprintf(stderr, "ERROR: open().\n");
+		return -1;	
 	}
+	if (ftruncate(disk, diskSize) < 0) { // Truncate the disk to diskSize, which is 256 aligned
+		fprintf(stderr, "ERROR: ftruncate().\n");
+		close(disk);
+		return -1;
+	}
+	return disk; // file descriptor 
+
 }
 
 // Close an existing disk
@@ -62,13 +62,17 @@ int readBlock(int disk, int bNum, void *block) {
 
 	// Read into local buffer 
 	ssize_t bytesRead = read(disk, block, BLOCKSIZE);
-	if (bytesRead > 0) {
-		block[bytesRead] = '\0'; // null-terminate
-	} else {
+	// if (bytesRead > 0) {
+	// 	block[bytesRead] = '\0'; // null-terminate
+	// } else {
+	// 	fprintf(stderr, "ERROR: read().\n");
+	// 	return -1;
+	// }
+
+	if (bytesRead < 0) {
 		fprintf(stderr, "ERROR: read().\n");
 		return -1;
 	}
-
 	return 0;
 }
 
