@@ -4,490 +4,488 @@
 #include <fcntl.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
+#include <stdint.h>
 #include <sys/errno.h>
 
 #include "tinyFS.h"
 #include "libDisk.h"
 #include "tinyFS_errno.h"
 
-// Global variables
+/* -----------------------------------------------------------------------
+ * Inode block layout (256 bytes)
+ *   [0]      block type: 2 = inode
+ *   [1]      magic: 0x44
+ *   [2]      unused (next ptr, 0 for inodes)
+ *   [3]      unused
+ *   [4-11]   filename (8 bytes, NOT necessarily null-terminated on disk)
+ *   [12-15]  file size, little-endian uint32
+ *   [16]     first extent block number  (INODE_FIRST_EXTENT)
+ *   [17-20]  creation timestamp, little-endian uint32  (INODE_CREATE_TIME)
+ *   [21-24]  modification timestamp, little-endian uint32 (INODE_MODIFY_TIME)
+ *   [25-28]  access timestamp, little-endian uint32  (INODE_ACCESS_TIME)
+ *   [29-255] reserved / zero
+ *
+ * Extent block layout (256 bytes)
+ *   [0]      block type: 3 = extent
+ *   [1]      magic: 0x44
+ *   [2]      next extent block number (0 = end of chain)
+ *   [3]      unused
+ *   [4-255]  data (252 bytes)
+ *
+ * Free block layout (256 bytes)
+ *   [0]      block type: 4 = free
+ *   [1]      magic: 0x44
+ *   [2]      next free block number (0 = end of free list)
+ *   [3]      unused
+ *
+ * Superblock layout (block 0)
+ *   [0]      block type: 1 = superblock
+ *   [1]      magic: 0x44
+ *   [2]      head of free-block list (0 = disk full)
+ *   [3]      unused
+ * ----------------------------------------------------------------------- */
+
+/* ---- helpers for 4-byte little-endian read/write ---- */
+static uint32_t read_u32(const unsigned char *buf, int offset) {
+    return ((uint32_t)buf[offset]) | ((uint32_t)buf[offset+1] << 8) | ((uint32_t)buf[offset+2] << 16) | ((uint32_t)buf[offset+3] << 24);
+}
+
+static void write_u32(unsigned char *buf, int offset, uint32_t val) {
+    buf[offset]   = val & 0xFF;
+    buf[offset+1] = (val >> 8)  & 0xFF;
+    buf[offset+2] = (val >> 16) & 0xFF;
+    buf[offset+3] = (val >> 24) & 0xFF;
+}
+
+/* ---- Global state ---- */
 static int mountedDisk = TFS_NOT_MOUNTED;
 static int numOfBlocks = 0;
 
-// Open Table Entry Struct
 typedef struct {
     int inUse;
-    int inodeBlock; // inode block this file uses
-    int filePointer; //current read/write pos inside the file
+    int inodeBlock;
+    int filePointer;
 } OpenTableEntry;
 
-// Array of files of type OpenTableEntry
 static OpenTableEntry openFileTable[MAX_OPEN_FILE];
 
-// Make a blank TinyFileSystem of size nBytes specified by 'filename'
+/* ---- Internal: allocate one free block from the free list.
+ *     Returns block number on success, -1 on failure (disk full). ---- */
+static int allocFreeBlock(void) {
+    unsigned char superBlock[BLOCKSIZE];
+    unsigned char freeBlock[BLOCKSIZE];
+
+    readBlock(mountedDisk, 0, superBlock);
+    int head = superBlock[2];
+    if (head == 0) return -1;
+
+    readBlock(mountedDisk, head, freeBlock);
+    superBlock[2] = freeBlock[2];
+    writeBlock(mountedDisk, 0, superBlock);
+    return head;
+}
+
+/* ---- Internal: return a block to the free list. ---- */
+static void freeOneBlock(int blockNum) {
+    unsigned char superBlock[BLOCKSIZE];
+    unsigned char freeBlock[BLOCKSIZE];
+
+    readBlock(mountedDisk, 0, superBlock);
+    int oldHead = superBlock[2];
+
+    memset(freeBlock, 0, BLOCKSIZE);
+    freeBlock[0] = 4;
+    freeBlock[1] = 0x44;
+    freeBlock[2] = oldHead;
+    writeBlock(mountedDisk, blockNum, freeBlock);
+
+    superBlock[2] = blockNum;
+    writeBlock(mountedDisk, 0, superBlock);
+}
+
+/* ====================================================================== */
+/*  tfs_mkfs                                                               */
+/* ====================================================================== */
 int tfs_mkfs(char *filename, int nBytes) {
-    if (nBytes < BLOCKSIZE) {
-        return TFS_ERROR; 
-    }
+    if (nBytes < BLOCKSIZE) return TFS_ERROR;
+
     int usableSize = nBytes - (nBytes % BLOCKSIZE);
-    int numBlocks = usableSize / BLOCKSIZE; // 10240 / 256 = blocks
-    numOfBlocks = numBlocks;
+    int numBlocks  = usableSize / BLOCKSIZE;
+    numOfBlocks    = numBlocks;
 
-    // Oppen disk to mount to build an empty filesystem
     int fd = openDisk(filename, usableSize);
+    if (fd < 0) return TFS_ERROR;
 
-    // Build superblock
-    unsigned char buildBlock[BLOCKSIZE]; // a block is 256 bytes 
-    memset(buildBlock, 0, BLOCKSIZE); // Set every byte to 0 
-    buildBlock[0] = 1;      // Superblock
-    buildBlock[1] = 0x44;   // Magic number
-    buildBlock[2] = 1;      // first free block
-    buildBlock[3] = 0;      // empty
+    /* Superblock */
+    unsigned char block[BLOCKSIZE];
+    memset(block, 0, BLOCKSIZE);
+    block[0] = 1;
+    block[1] = 0x44;
+    block[2] = 1;   /* first free block is block 1 */
+    writeBlock(fd, 0, block);
 
-    writeBlock(fd, 0, buildBlock); // Write the superblock to file at block #0
-    
-    // Write the rest of the blocks
+    /* Free blocks: linked list 1 -> 2 -> ... -> (numBlocks-1) -> 0 */
     for (int i = 1; i < numBlocks; i++) {
-        memset(buildBlock, 0, BLOCKSIZE); // Initialize everything to 0
-        buildBlock[0] = 4; // Free block since we're initializing
-        buildBlock[1] = 0x44;
-        if (i == numBlocks - 1) {
-            buildBlock[2] = 0; // reaches the end of block, linked to superblock (not a free block)
-        } else {
-            buildBlock[2] = i+1; // Next free block
-        }
-        buildBlock[3] = 0;
-        writeBlock(fd, i, buildBlock);
+        memset(block, 0, BLOCKSIZE);
+        block[0] = 4;
+        block[1] = 0x44;
+        block[2] = (i == numBlocks - 1) ? 0 : i + 1;
+        writeBlock(fd, i, block);
     }
 
     closeDisk(fd);
     return TFS_SUCCESS;
 }
 
-// Mount
+/* ====================================================================== */
+/*  tfs_mount                                                              */
+/* ====================================================================== */
 int tfs_mount(char *diskname) {
     unsigned char verifyBlock[BLOCKSIZE];
 
-    // Open file
-    int disk = openDisk(diskname, 0); // Diks already opened 
-    readBlock(disk, 0, verifyBlock);  // Read block 0 into buffer
+    int disk = openDisk(diskname, 0);
+    if (disk < 0) return TFS_DISK_NOT_FOUND;
 
-    //  Verify it's type 1 and has 0x44
-    if ((verifyBlock[0] != 1) || (verifyBlock[1] != 0x44)) {
-        mountedDisk = TFS_NOT_MOUNTED;
+    readBlock(disk, 0, verifyBlock);
+    if (verifyBlock[0] != 1 || verifyBlock[1] != 0x44) {
+        closeDisk(disk);
         return TFS_NOT_MOUNTED;
     }
-    
-    // Set number of blocks
-    numOfBlocks = DEFAULT_DISK_SIZE / BLOCKSIZE;
 
-    // Set disk to mountedDisk variable
+    /* Derive numOfBlocks from actual file size */
+    off_t diskSize = lseek(disk, 0, SEEK_END);
+    if (diskSize <= 0) diskSize = DEFAULT_DISK_SIZE;
+    numOfBlocks = (int)(diskSize / BLOCKSIZE);
+
     mountedDisk = disk;
     return TFS_SUCCESS;
 }
 
-// Unmount 
+/* ====================================================================== */
+/*  tfs_unmount                                                            */
+/* ====================================================================== */
 int tfs_unmount(void) {
-    if (mountedDisk < 0) {
-        return TFS_NOT_MOUNTED;
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+
+    /* Close all open files cleanly */
+    for (int i = 0; i < MAX_OPEN_FILE; i++) {
+        openFileTable[i].inUse = 0;
+        openFileTable[i].inodeBlock = -1;
+        openFileTable[i].filePointer = -1;
     }
-    
-    // Close disk
+
     closeDisk(mountedDisk);
     mountedDisk = TFS_NOT_MOUNTED;
+    numOfBlocks  = 0;
     return TFS_SUCCESS;
 }
 
+/* ====================================================================== */
+/*  tfs_openFile                                                           */
+/* ====================================================================== */
 fileDescriptor tfs_openFile(char *name) {
-    if (strlen(name) > 8) {
+    if (!name || strlen(name) == 0 || strlen(name) > 8)
         return TFS_FILE_NAME_TOO_LONG;
-    }
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
 
-    // Initialize buffer for block building
     unsigned char buffer[BLOCKSIZE];
+    time_t now = time(NULL);
 
-    // more check
-    if (mountedDisk < 0) {
-        return TFS_ERROR;
-    }
-
-    // Allocation
-    // Search for inode
+    /* Search for an existing inode with this name */
     for (int i = 1; i < numOfBlocks; i++) {
-        // skip first block because it's superblock
-        readBlock(mountedDisk, i, buffer); // Read blocks of data into buffer
-        if (buffer[0] == 2) { // First block, type 2 or inode
-            if (strncmp((char*)&buffer[4], name, 8) == 0) { // Compare Bytes 4-11 to name
+        readBlock(mountedDisk, i, buffer);
+        if (buffer[0] == 2 && buffer[1] == 0x44) {
+            if (strncmp((char *)&buffer[4], name, 8) == 0) {
+                /* Found — update access time and open */
+                write_u32(buffer, INODE_ACCESS_TIME, (uint32_t)now);
+                writeBlock(mountedDisk, i, buffer);
+
                 for (int j = 0; j < MAX_OPEN_FILE; j++) {
-                    if (openFileTable[j].inUse != 1) {
+                    if (!openFileTable[j].inUse) {
                         openFileTable[j].inUse = 1;
                         openFileTable[j].inodeBlock = i;
                         openFileTable[j].filePointer = 0;
                         return j;
                     }
                 }
-                return TFS_ERROR;
+                return TFS_ERROR; /* open table full */
             }
         }
     }
 
-    ////////////////////////////////////
-    // Before:
-    // Superblock freeHead = 5
-    //5 -> 8 -> 12 -> 0
+    /* Not found — create a new inode */
+    int newBlock = allocFreeBlock();
+    if (newBlock < 0) return TFS_ERROR;
 
-    // All blocks have been checked, but no inode was found, create it
-    unsigned char superBlock[BLOCKSIZE];
-    unsigned char freeBlock[BLOCKSIZE];
+    memset(buffer, 0, BLOCKSIZE);
+    buffer[0] = 2;
+    buffer[1] = 0x44;
+    strncpy((char *)&buffer[4], name, 8);
+    /* size = 0, first extent = 0 already from memset */
+    write_u32(buffer, INODE_CREATE_TIME, (uint32_t)now);
+    write_u32(buffer, INODE_MODIFY_TIME, (uint32_t)now);
+    write_u32(buffer, INODE_ACCESS_TIME, (uint32_t)now);
+    writeBlock(mountedDisk, newBlock, buffer);
 
-    // Read superblock content into superblock buffer
-    readBlock(mountedDisk, 0, superBlock);
-
-    int headFreeBlock = superBlock[2]; // Inode
-    if (headFreeBlock == 0) {
-        return TFS_ERROR; // No free block
+    for (int j = 0; j < MAX_OPEN_FILE; j++) {
+        if (!openFileTable[j].inUse) {
+            openFileTable[j].inUse = 1;
+            openFileTable[j].inodeBlock = newBlock;
+            openFileTable[j].filePointer = 0;
+            return j;
+        }
     }
-
-    // Read freeblock content into freeblock buffer
-    readBlock(mountedDisk, headFreeBlock, freeBlock);
-
-    int nextFreeBlock = freeBlock[2]; // move pointer to the next freeblock
-    superBlock[2] = nextFreeBlock; // now superBlock points to the next freeblock
-    
-    writeBlock(mountedDisk, 0, superBlock); // write back the superblock with the new ptr to the next free block
-
-    // After:
-    // Superblock freeHead = 8
-    // 8 -> 12 -> 0
-    ////////////////////////////////////
-
-    // Build inode
-    memset(buffer, 0, BLOCKSIZE); // Set every byte to 0 
-    buffer[0] = 2;    // Set inode block
-    buffer[1] = 0x44; // Magic number
-    buffer[2] = 0;
-    buffer[3] = 0;
-
-    // Copy name to bytes 4-11
-    strncpy((char*)&buffer[4], name, 8);
-
-    // Update this block as inode in the mounted disk
-    writeBlock(mountedDisk, headFreeBlock, buffer);
-    
-    // Now create open file entry 
-    for (int i = 0; i < MAX_OPEN_FILE; i++) {
-        if (openFileTable[i].inUse != 1) {
-            openFileTable[i].inUse = 1;
-            openFileTable[i].inodeBlock = headFreeBlock;
-            openFileTable[i].filePointer = 0;
-            return i;
-        }  
-    }
-    
+    /* open table full — roll back the inode we just wrote */
+    freeOneBlock(newBlock);
     return TFS_ERROR;
 }
 
-// Close the file
-// Deallocate all system resources
-// Remove table entry
+/* ====================================================================== */
+/*  tfs_closeFile                                                          */
+/* ====================================================================== */
 int tfs_closeFile(fileDescriptor FD) {
-    if (mountedDisk < 0) {
-        return TFS_NOT_MOUNTED;
-    }
-
-    // Boundary check
-    if (FD < 0 || FD >= MAX_OPEN_FILE) {
-        return TFS_ERROR;
-    }
-
-    // Clear the openFileTable struct
-    if (openFileTable[FD].inUse != 1) {
-        return TFS_ERROR;
-    } else {
-        openFileTable[FD].inUse = 0;
-        openFileTable[FD].inodeBlock = -1;
-        openFileTable[FD].filePointer = -1;
-    }
-
-    return TFS_SUCCESS;
-}
-
-int tfs_writeFile(fileDescriptor FD, char *buffer, int size) {
-    // Check mounted disk
-    if (mountedDisk < 0) {
-        return TFS_NOT_MOUNTED;
-    }
-
-    // Check file descriptor
-    if (FD < 0 || FD >= MAX_OPEN_FILE) {
-        return TFS_ERROR;
-    }
-
-    int currentInodeBlock = -1;        
-    unsigned char readInodeBlock[BLOCKSIZE]; // Buffer to store inode block
-
-    // Validate FD
-    if (openFileTable[FD].inUse) {
-        currentInodeBlock = openFileTable[FD].inodeBlock; // Get inode block
-        readBlock(mountedDisk, currentInodeBlock, readInodeBlock); // Read this inode block at this block # to buffer
-    } else {
-        return TFS_ERROR;
-    }
-
-    int currentExtentBlock = readInodeBlock[INODE_FIRST_EXTENT]; // 16
-
-    // 5 - 7 - 8 - 0
-    //  Clear old data, make it free block
-    while (currentExtentBlock != 0) {
-        //  Record the next block extent and clear the current one
-        unsigned char extentBlock[BLOCKSIZE];
-        readBlock(mountedDisk, currentExtentBlock, extentBlock); //Reset the current extent block 
-
-        int nextExtentBlock = extentBlock[2]; // Grab the next extent block
-
-        // Free block
-        ///////////////////////////////////////
-        unsigned char superBlock[BLOCKSIZE];
-        unsigned char freeBlock[BLOCKSIZE];
-        readBlock(mountedDisk, 0, superBlock);
-
-        int oldHead = superBlock[2];
-        memset(freeBlock, 0, BLOCKSIZE);
-        freeBlock[0] = 4;
-        freeBlock[1] = 0x44;
-        freeBlock[2] = oldHead; // Point to previous head
-
-        writeBlock(mountedDisk, currentExtentBlock, freeBlock);
-        superBlock[2] = currentExtentBlock;
-
-        writeBlock(mountedDisk, 0, superBlock);
-        ///////////////////////////////////////
-
-        currentExtentBlock = nextExtentBlock; // Current inode block is now the nextExtentBlock
-    } 
-
-    // Now the file has no extents, allocate new blocks
-    int numBlocks = ceil((double)size / 252);
-    int extentBlockBuffer[numBlocks]; // Store the free extent blocks to be used to build 
-
-    unsigned char findFreeBlock[BLOCKSIZE]; // Temp placeholder to find free blocks
-    for (int i = 0; i < numBlocks; i++) {
-        unsigned char superBlock[BLOCKSIZE];
-        unsigned char freeBlock[BLOCKSIZE];
-
-        // Allocating free block
-        ////////////////////////////////////////////////////////////////////////////////
-        readBlock(mountedDisk, 0,  superBlock); // Read super block
-        int headFree = superBlock[2]; // free block head
-        if (headFree == 0) {
-            return TFS_ERROR; // No more free blocks
-        }
-
-        // Update the next free one to Superblock after grabbing the previous free one
-        readBlock(mountedDisk, headFree, freeBlock); // Read the first free block
-        int nextFree = freeBlock[2];
-        superBlock[2] = nextFree;
-        writeBlock(mountedDisk, 0, superBlock); // Update the disk
-        ////////////////////////////////////////////////////////////////////////////////
-
-        extentBlockBuffer[i] = headFree;
-        if (extentBlockBuffer[i] < 0) {
-            return TFS_ERROR;
-        }
-    }
-
-
-    // Transfer data into extent block
-    int offset = 0; // track offset
-    for (int i = 0; i < numBlocks; i++) {
-        unsigned char transferData[BLOCKSIZE];
-        memset(transferData, 0, BLOCKSIZE); // Zero everything out
-
-        // Building new data block
-        transferData[0] = 3;
-        transferData[1] = 0x44;
-        if (i == numBlocks - 1) {
-            transferData[2] = 0;
-        } else {
-            transferData[2] = extentBlockBuffer[i+1]; // Next extent block in list
-        }
-        
-        int bytesLeftToRead = size - offset;
-        int bytesToCopy = 0;
-        if (bytesLeftToRead > 252) {
-            bytesToCopy = 252;
-        } else {
-            bytesToCopy = bytesLeftToRead;
-        }
-
-        memcpy(&transferData[4], buffer + offset, bytesToCopy); // Copy this much bytes
-        writeBlock(mountedDisk, extentBlockBuffer[i], transferData); // Write to block
-        offset+= bytesToCopy;
-    }
-
-    // Update inode
-    if (numBlocks == 0) {
-        readInodeBlock[INODE_FIRST_EXTENT] = 0;
-    } else {
-        readInodeBlock[INODE_FIRST_EXTENT] = extentBlockBuffer[0];
-    }
-
-    // Update the filesize; bytes 13-15 for bigger size
-    readInodeBlock[12] = size & 0xFF;
-    readInodeBlock[13] = (size >> 8) & 0xFF;
-    readInodeBlock[14] = (size >> 16) & 0xFF;
-    readInodeBlock[15] = (size >> 24) & 0xFF;
-
-    writeBlock(mountedDisk, currentInodeBlock, readInodeBlock); // Update the inode block
-    openFileTable[FD].filePointer = 0; // Update file pointer
-
-    return TFS_SUCCESS;
-}
-
-int tfs_deleteFile(fileDescriptor FD) {
-    if (mountedDisk < 0) {
-        return TFS_NOT_MOUNTED;
-    }
-    if (FD < 0 || FD >= MAX_OPEN_FILE || openFileTable[FD].inUse != 1) {
-        return TFS_ERROR;
-    }
-
-    // Get inode block and read it into the buffer
-    unsigned char readInodeBlock[BLOCKSIZE];
-    int inodeBlock = openFileTable[FD].inodeBlock;
-    readBlock(mountedDisk, inodeBlock, readInodeBlock);
-
-    int firstExtent = readInodeBlock[INODE_FIRST_EXTENT];
-    
-    while (firstExtent != 0) {
-        unsigned char extentBlock[BLOCKSIZE];
-        readBlock(mountedDisk, firstExtent, extentBlock);
-
-        // Grab the next extent block
-        int nextExtentBlock = extentBlock[2];
-
-        // Free the current extent block
-        unsigned char superBlock[BLOCKSIZE];
-        unsigned char freeBlock[BLOCKSIZE];
-
-        readBlock(mountedDisk, 0, superBlock);
-        
-        int oldFreeBlockHead = superBlock[2];
-
-        // Rebuilding free block
-        memset(freeBlock, 0, BLOCKSIZE);
-        freeBlock[0] = 4;
-        freeBlock[1] = 0x44;
-        freeBlock[2] = oldFreeBlockHead;
-        writeBlock(mountedDisk, firstExtent, freeBlock); // Write free block to prev first extent
-
-        superBlock[2] = firstExtent; // First free block is now this
-        writeBlock(mountedDisk, 0, superBlock);
-
-        firstExtent = nextExtentBlock;
-    }
-
-    // Free inode
-    unsigned char superBlock[BLOCKSIZE];
-    readBlock(mountedDisk, 0, superBlock);
-
-    int oldFreeBlockHead = superBlock[2];
-    
-    // Rebuilding inode block to free block
-    memset(readInodeBlock, 0, BLOCKSIZE);
-    readInodeBlock[0] = 4;
-    readInodeBlock[1] = 0x44;
-    readInodeBlock[2] = oldFreeBlockHead;
-    writeBlock(mountedDisk, inodeBlock, readInodeBlock);
-
-    // Update the superBlock to track the first free block, which was the inode
-    superBlock[2] = inodeBlock;
-    writeBlock(mountedDisk, 0, superBlock);
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE) return TFS_ERROR;
+    if (!openFileTable[FD].inUse) return TFS_ERROR;
 
     openFileTable[FD].inUse = 0;
     openFileTable[FD].inodeBlock = -1;
     openFileTable[FD].filePointer = -1;
-
     return TFS_SUCCESS;
 }
 
+/* ====================================================================== */
+/*  tfs_writeFile                                                          */
+/* ====================================================================== */
+int tfs_writeFile(fileDescriptor FD, char *buffer, int size) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
+        return TFS_ERROR;
+
+    int inodeBlockNum = openFileTable[FD].inodeBlock;
+    unsigned char inodeBuf[BLOCKSIZE];
+    readBlock(mountedDisk, inodeBlockNum, inodeBuf);
+
+    /* Free all existing extent blocks */
+    int cur = inodeBuf[INODE_FIRST_EXTENT];
+    while (cur != 0) {
+        unsigned char ext[BLOCKSIZE];
+        readBlock(mountedDisk, cur, ext);
+        int next = ext[2];
+        freeOneBlock(cur);
+        cur = next;
+    }
+
+    /* Allocate exactly as many new extent blocks as needed */
+    int numExtents = (size == 0) ? 0 : (int)ceil((double)size / 252.0);
+    int extBlocks[numExtents];
+
+    for (int i = 0; i < numExtents; i++) {
+        extBlocks[i] = allocFreeBlock();
+        if (extBlocks[i] < 0) return TFS_ERROR;
+    }
+
+    /* Write data into extent blocks */
+    int offset = 0;
+    for (int i = 0; i < numExtents; i++) {
+        unsigned char ext[BLOCKSIZE];
+        memset(ext, 0, BLOCKSIZE);
+        ext[0] = 3;
+        ext[1] = 0x44;
+        ext[2] = (i == numExtents - 1) ? 0 : extBlocks[i + 1];
+
+        int toCopy = (size - offset > 252) ? 252 : size - offset;
+        memcpy(&ext[4], buffer + offset, toCopy);
+        writeBlock(mountedDisk, extBlocks[i], ext);
+        offset += toCopy;
+    }
+
+    /* Update inode: size, first extent, modify + access timestamps */
+    inodeBuf[INODE_FIRST_EXTENT] = (numExtents == 0) ? 0 : extBlocks[0];
+    write_u32(inodeBuf, 12, (uint32_t)size);
+
+    time_t now = time(NULL);
+    write_u32(inodeBuf, INODE_MODIFY_TIME, (uint32_t)now);
+    write_u32(inodeBuf, INODE_ACCESS_TIME, (uint32_t)now);
+
+    writeBlock(mountedDisk, inodeBlockNum, inodeBuf);
+    openFileTable[FD].filePointer = 0;
+    return TFS_SUCCESS;
+}
+
+/* ====================================================================== */
+/*  tfs_deleteFile                                                         */
+/* ====================================================================== */
+int tfs_deleteFile(fileDescriptor FD) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
+        return TFS_ERROR;
+
+    int inodeBlockNum = openFileTable[FD].inodeBlock;
+    unsigned char inodeBuf[BLOCKSIZE];
+    readBlock(mountedDisk, inodeBlockNum, inodeBuf);
+
+    /* Free all extent blocks */
+    int cur = inodeBuf[INODE_FIRST_EXTENT];
+    while (cur != 0) {
+        unsigned char ext[BLOCKSIZE];
+        readBlock(mountedDisk, cur, ext);
+        int next = ext[2];
+        freeOneBlock(cur);
+        cur = next;
+    }
+
+    /* Free the inode itself */
+    freeOneBlock(inodeBlockNum);
+
+    openFileTable[FD].inUse = 0;
+    openFileTable[FD].inodeBlock = -1;
+    openFileTable[FD].filePointer = -1;
+    return TFS_SUCCESS;
+}
+
+/* ====================================================================== */
+/*  tfs_readByte                                                           */
+/* ====================================================================== */
 int tfs_readByte(fileDescriptor FD, char *buffer) {
-    if (mountedDisk < 0) {
-        return TFS_NOT_MOUNTED;
-    }
-    if (FD < 0 || FD >= MAX_OPEN_FILE || openFileTable[FD].inUse != 1) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
         return TFS_ERROR;
+
+    unsigned char inodeBuf[BLOCKSIZE];
+    readBlock(mountedDisk, openFileTable[FD].inodeBlock, inodeBuf);
+
+    int fileSize = (int)read_u32(inodeBuf, 12);
+    int fp = openFileTable[FD].filePointer;
+    if (fp >= fileSize) return TFS_ERROR; /* EOF */
+
+    int extentIdx  = fp / 252;
+    int byteOffset = fp % 252;
+
+    int nextExt = inodeBuf[INODE_FIRST_EXTENT];
+    for (int i = 0; i < extentIdx; i++) {
+        if (nextExt <= 0) return TFS_ERROR;
+        unsigned char ext[BLOCKSIZE];
+        readBlock(mountedDisk, nextExt, ext);
+        nextExt = ext[2];
     }
+    if (nextExt <= 0) return TFS_ERROR;
 
-    unsigned char inodeBlock[BLOCKSIZE];
-    int currentInode = openFileTable[FD].inodeBlock; // Grab the inode
-    readBlock(mountedDisk, currentInode, inodeBlock);
+    unsigned char ext[BLOCKSIZE];
+    readBlock(mountedDisk, nextExt, ext);
+    *buffer = ext[4 + byteOffset];
 
-    // Check file ptr boundary
-    int currentFilePointer = openFileTable[FD].filePointer;
-    
-    // File size
-    int fileSize = inodeBlock[12] | (inodeBlock[13] << 8) | (inodeBlock[14] << 16) | (inodeBlock[15] << 24);
-    if (currentFilePointer >= fileSize) {
-        return TFS_ERROR; // past EOF
-    }
-
-    // Finding byte offset and extent page 
-    int findExtent = currentFilePointer / 252;
-    int findByteOffsetWithinExtent = currentFilePointer % 252;
-
-    int nextExtent = inodeBlock[INODE_FIRST_EXTENT];
-    for (int i = 0; i < findExtent; i++) {
-        unsigned char readExtent[BLOCKSIZE];
-
-        if (nextExtent <= 0) {
-            return TFS_ERROR;
-        }
-        readBlock(mountedDisk, nextExtent, readExtent); // read the next extent
-        nextExtent = readExtent[2];
-    }
-    
-    // Check extent #
-    if (nextExtent <= 0) {
-            return TFS_ERROR;
-    }
-    
-    // Read the wanted extent to buffer
-    unsigned char readExtent[BLOCKSIZE];
-    readBlock(mountedDisk, nextExtent, readExtent);
-
-    // int byteRead = readExtent[4+findByteOffsetWithinExtent]; //extent data starts at byte 4
-    // memcpy(buffer, &byteRead, 1);
-    // currentFilePointer++;
-    // openFileTable[FD].filePointer = currentFilePointer;
-    *buffer = readExtent[4 + findByteOffsetWithinExtent];
     openFileTable[FD].filePointer++;
+
+    /* Update access timestamp in inode */
+    write_u32(inodeBuf, INODE_ACCESS_TIME, (uint32_t)time(NULL));
+    writeBlock(mountedDisk, openFileTable[FD].inodeBlock, inodeBuf);
+
     return TFS_SUCCESS;
 }
 
+/* ====================================================================== */
+/*  tfs_seek                                                               */
+/* ====================================================================== */
 int tfs_seek(fileDescriptor FD, int offset) {
-    // Did it mount?
-    if (mountedDisk < 0) {
-        return TFS_NOT_MOUNTED;
-    }
-
-    // Valid FD?
-    if (FD < 0 || FD >= MAX_OPEN_FILE || openFileTable[FD].inUse != 1) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
         return TFS_ERROR;
-    }
 
-    // Read content of inode into buffer
-    unsigned char inodeBlock[BLOCKSIZE];
-    int currentInode = openFileTable[FD].inodeBlock; // Grab the inode
-    readBlock(mountedDisk, currentInode, inodeBlock);
+    unsigned char inodeBuf[BLOCKSIZE];
+    readBlock(mountedDisk, openFileTable[FD].inodeBlock, inodeBuf);
 
-    // Check file ptr boundary
-    int fileSize = inodeBlock[12] | (inodeBlock[13] << 8) | (inodeBlock[14] << 16) | (inodeBlock[15] << 24);
-    if (offset < 0 || offset > fileSize) {
-        return TFS_ERROR;
-    }
-    
-    // Update file pointer to offset at absolute position
+    int fileSize = (int)read_u32(inodeBuf, 12);
+    if (offset < 0 || offset > fileSize) return TFS_ERROR;
+
     openFileTable[FD].filePointer = offset;
+    return TFS_SUCCESS;
+}
+
+/* ====================================================================== */
+/*  tfs_readdir  (extra feature b)                                        */
+/*  Scans all blocks; prints name and size of every inode found.          */
+/* ====================================================================== */
+int tfs_readdir(void) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+
+    printf("%-10s  %s\n", "NAME", "SIZE (bytes)");
+    printf("%-10s  %s\n", "----------", "------------");
+
+    int found = 0;
+    unsigned char buf[BLOCKSIZE];
+    for (int i = 1; i < numOfBlocks; i++) {
+        readBlock(mountedDisk, i, buf);
+        if (buf[0] == 2 && buf[1] == 0x44) {
+            char name[9];
+            memset(name, 0, sizeof(name));
+            strncpy(name, (char *)&buf[4], 8);
+
+            int size = (int)read_u32(buf, 12);
+            printf("%-10s  %d\n", name, size);
+            found++;
+        }
+    }
+
+    if (found == 0) printf("  (no files)\n");
+    return TFS_SUCCESS;
+}
+
+/* ====================================================================== */
+/*  tfs_rename  (extra feature b)                                         */
+/*  Renames an open file. The file must be open (FD valid).               */
+/* ====================================================================== */
+int tfs_rename(fileDescriptor FD, char *newName) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
+        return TFS_ERROR;
+    if (!newName || strlen(newName) == 0 || strlen(newName) > 8)
+        return TFS_FILE_NAME_TOO_LONG;
+
+    /* Make sure newName is not already taken */
+    unsigned char buf[BLOCKSIZE];
+    for (int i = 1; i < numOfBlocks; i++) {
+        readBlock(mountedDisk, i, buf);
+        if (buf[0] == 2 && buf[1] == 0x44) {
+            if (strncmp((char *)&buf[4], newName, 8) == 0)
+                return TFS_ERROR; /* name already exists */
+        }
+    }
+
+    int inodeBlockNum = openFileTable[FD].inodeBlock;
+    readBlock(mountedDisk, inodeBlockNum, buf);
+
+    memset(&buf[4], 0, 8);
+    strncpy((char *)&buf[4], newName, 8);
+
+    /* Update modification time */
+    write_u32(buf, INODE_MODIFY_TIME, (uint32_t)time(NULL));
+
+    writeBlock(mountedDisk, inodeBlockNum, buf);
+    return TFS_SUCCESS;
+}
+
+/* ====================================================================== */
+/*  tfs_readFileInfo  (extra feature e)                                   */
+/*  Fills a FileInfo struct for the open file identified by FD.           */
+/* ====================================================================== */
+int tfs_readFileInfo(fileDescriptor FD, FileInfo *info) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
+        return TFS_ERROR;
+    if (!info) return TFS_ERROR;
+
+    unsigned char inodeBuf[BLOCKSIZE];
+    readBlock(mountedDisk, openFileTable[FD].inodeBlock, inodeBuf);
+
+    memset(info->name, 0, sizeof(info->name));
+    strncpy(info->name, (char *)&inodeBuf[4], 8);
+
+    info->fileSize   = (int)read_u32(inodeBuf, 12);
+    info->createTime = (time_t)read_u32(inodeBuf, INODE_CREATE_TIME);
+    info->modifyTime = (time_t)read_u32(inodeBuf, INODE_MODIFY_TIME);
+    info->accessTime = (time_t)read_u32(inodeBuf, INODE_ACCESS_TIME);
+
     return TFS_SUCCESS;
 }

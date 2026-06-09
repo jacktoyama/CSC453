@@ -1,3 +1,25 @@
+Binh To and Jack Toyama
+
+TinyFS Implementation
+
+Additional Functionality
+
+B. Directory Listing and File Renaming
+    Tests additional function tfs_readdir() which prints name and size of every
+    inode. Then tests tfs_reaname(), which renames a file, by renaming it and
+    checking return value
+
+E. Timestamps
+    File create, last modified and accessed times all stored in file info
+    struct. Tested by printing file info, then writing to file, waiting 5
+    seconds, then printiing again. Last modified and accessed time updates,
+    created does not.
+
+Extra Credit
+
+
+
+
 INODE BLOCK (256 bytes)
 
 Byte 0   block type (2)
