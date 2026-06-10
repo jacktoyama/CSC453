@@ -2,6 +2,15 @@ Binh To and Jack Toyama
 
 TinyFS Implementation
 
+How well it works:
+My TinyFS implementation works as expected and is able to correctly create, mount, write, read, rename, delete, and list files. 
+The filesystem stores data in fixed-size blocks and uses metadata blocks to track file information such as file name, size,
+timestamps, and block pointers. The test file we have shows that the implementation works as expected.  It preserves file data, updates metadata, and 
+display useful file information. We kept the filesystem design simple using linked blocks rather than a more advanced indexing structure to store file data. 
+This makes the implementation easier to understand and debug. Overall, the program works as intended, as demo'ed by our tinyFSDemo program.
+
+One thing to note is that we have kept the number of customized error flags to a minimum amount to avoid confusion due to having too many error codes.
+
 Additional Functionality
 
 B. Directory Listing and File Renaming
@@ -28,21 +37,7 @@ D. Read-only and writeByte Support
     checking to make sure they were written to correctly. 
 
 H. File System Consistency Checks
-
     New function tfs_checkConsistency(). On every tfs_mount() call, function
     parses all free and inode blocks in the system. Confirms all block types
     are valid, every block is referenced exactly once, and each block has the 
     correct magic byte.
-
-
-INODE BLOCK (256 bytes)
-
-Byte 0   block type (2)
-Byte 1   magic number (0x44)
-Byte 2   next block
-Byte 3   unused
-
-Byte 4-11   filename (8 bytes)
-Byte 12-15  filesize
-Byte 16     first extent block
-17-255      unused

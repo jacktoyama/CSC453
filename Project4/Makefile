@@ -26,3 +26,6 @@ diskTest.o: diskTest.c libDisk.h
 
 clean:
 	rm -f *.o tinyFSDemo diskTest tinyFSDisk *.dsk
+
+submission: libDisk.c libDisk.h tinyFS.c tinyFS.h tinyFS_errno.h tinyFSDemo.c diskTest.c tfsTest.c Makefile README
+	tar -czf project4_submission.tar.gz libDisk.c libDisk.h tinyFS.c tinyFS.h tinyFS_errno.h tinyFSDemo.c diskTest.c tfsTest.c Makefile README
