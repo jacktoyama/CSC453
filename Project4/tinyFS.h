@@ -23,6 +23,9 @@ typedef int fileDescriptor;
 #define INODE_MODIFY_TIME  21   /* bytes 21-24: last modification timestamp */
 #define INODE_ACCESS_TIME  25   /* bytes 25-28: last access timestamp */
 
+/* Inode read-only flag byte offset (feature d) */
+#define INODE_RO_FLAG      29   /* byte 29: 1 = read-only, 0 = read-write */
+
 /* FileInfo struct returned by tfs_readFileInfo() */
 typedef struct {
     char     name[9];        /* null-terminated filename (up to 8 chars) */
@@ -30,6 +33,7 @@ typedef struct {
     time_t   createTime;     /* creation time */
     time_t   modifyTime;     /* last modification time */
     time_t   accessTime;     /* last access time */
+    int      readOnly;       /* 1 if read-only, 0 if read-write */
 } FileInfo;
 
 /* Core functions */
@@ -47,7 +51,15 @@ int tfs_seek(fileDescriptor FD, int offset);
 int tfs_readdir(void);
 int tfs_rename(fileDescriptor FD, char *newName);
 
+/* Extra feature (d): Read-only support and writeByte */
+int tfs_makeRO(char *name);
+int tfs_makeRW(char *name);
+int tfs_writeByte(fileDescriptor FD, unsigned int data);
+
 /* Extra feature (e): Timestamps */
 int tfs_readFileInfo(fileDescriptor FD, FileInfo *info);
+
+/* Extra feature (h): File system consistency check */
+int tfs_checkConsistency(void);
 
 #endif

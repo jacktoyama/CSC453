@@ -24,7 +24,8 @@
  *   [17-20]  creation timestamp, little-endian uint32  (INODE_CREATE_TIME)
  *   [21-24]  modification timestamp, little-endian uint32 (INODE_MODIFY_TIME)
  *   [25-28]  access timestamp, little-endian uint32  (INODE_ACCESS_TIME)
- *   [29-255] reserved / zero
+ *   [29]     read-only flag: 1 = RO, 0 = RW                (INODE_RO_FLAG)
+ *   [30-255] reserved / zero
  *
  * Extent block layout (256 bytes)
  *   [0]      block type: 3 = extent
@@ -48,12 +49,15 @@
 
 /* ---- helpers for 4-byte little-endian read/write ---- */
 static uint32_t read_u32(const unsigned char *buf, int offset) {
-    return ((uint32_t)buf[offset]) | ((uint32_t)buf[offset+1] << 8) | ((uint32_t)buf[offset+2] << 16) | ((uint32_t)buf[offset+3] << 24);
+    return ((uint32_t)buf[offset])
+         | ((uint32_t)buf[offset+1] << 8)
+         | ((uint32_t)buf[offset+2] << 16)
+         | ((uint32_t)buf[offset+3] << 24);
 }
 
 static void write_u32(unsigned char *buf, int offset, uint32_t val) {
-    buf[offset]   = val & 0xFF;
-    buf[offset+1] = (val >> 8)  & 0xFF;
+    buf[offset]   =  val        & 0xFF;
+    buf[offset+1] = (val >>  8) & 0xFF;
     buf[offset+2] = (val >> 16) & 0xFF;
     buf[offset+3] = (val >> 24) & 0xFF;
 }
@@ -139,6 +143,143 @@ int tfs_mkfs(char *filename, int nBytes) {
 }
 
 /* ====================================================================== */
+/*  tfs_checkConsistency  (extra feature h)                               */
+/*                                                                         */
+/*  Scans the entire disk and verifies:                                    */
+/*    1. Every block has the correct magic byte (0x44 at offset 1).        */
+/*    2. Every block type is one of {1,2,3,4}.                             */
+/*    3. No block appears on both the free list AND is reachable as an     */
+/*       inode or extent (double-allocation).                              */
+/*    4. No block is completely unreferenced — not on the free list and    */
+/*       not reachable from any inode (leaked block).                      */
+/*                                                                         */
+/*  Returns TFS_SUCCESS if the filesystem is consistent,                   */
+/*  TFS_INCONSISTENT with a printed description otherwise.                 */
+/* ====================================================================== */
+int tfs_checkConsistency(void) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+
+    /* We use three bit-arrays (one byte per block for simplicity):
+     *   onFreeList[i]  = 1 if block i is on the free list
+     *   allocated[i]   = 1 if block i is reachable from an inode
+     *   seen[i]        = 1 if block i was visited at all
+     */
+    int *onFreeList = calloc(numOfBlocks, sizeof(int));
+    int *allocated  = calloc(numOfBlocks, sizeof(int));
+    int consistent  = 1;
+
+    unsigned char buf[BLOCKSIZE];
+
+    /* --- Walk the free list ------------------------------------------- */
+    readBlock(mountedDisk, 0, buf);
+    int cur = buf[2];
+    int steps = 0;
+    while (cur != 0) {
+        if (cur < 1 || cur >= numOfBlocks) {
+            printf("  [INCONSISTENT] Free list contains out-of-range block %d\n", cur);
+            consistent = 0;
+            break;
+        }
+        if (onFreeList[cur]) {
+            printf("  [INCONSISTENT] Free list cycle detected at block %d\n", cur);
+            consistent = 0;
+            break;
+        }
+        onFreeList[cur] = 1;
+        readBlock(mountedDisk, cur, buf);
+
+        /* Magic byte check on free block */
+        if (buf[1] != 0x44) {
+            printf("  [INCONSISTENT] Block %d on free list has bad magic 0x%02X\n", cur, buf[1]);
+            consistent = 0;
+        }
+        cur = buf[2];
+        if (++steps > numOfBlocks) break; /* safety */
+    }
+
+    /* --- Walk all inodes and their extent chains ----------------------- */
+    for (int i = 1; i < numOfBlocks; i++) {
+        readBlock(mountedDisk, i, buf);
+
+        /* Magic byte: every block must have 0x44 at offset 1 */
+        if (buf[1] != 0x44) {
+            printf("  [INCONSISTENT] Block %d has bad magic byte 0x%02X\n", i, buf[1]);
+            consistent = 0;
+            continue;
+        }
+
+        /* Unknown block type */
+        if (buf[0] != 1 && buf[0] != 2 && buf[0] != 3 && buf[0] != 4) {
+            printf("  [INCONSISTENT] Block %d has unknown type %d\n", i, buf[0]);
+            consistent = 0;
+            continue;
+        }
+
+        if (buf[0] == 2) { /* inode */
+            allocated[i] = 1;
+
+            /* Follow extent chain */
+            int ext = buf[INODE_FIRST_EXTENT];
+            int extSteps = 0;
+            while (ext != 0) {
+                if (ext < 1 || ext >= numOfBlocks) {
+                    printf("  [INCONSISTENT] Inode at block %d has out-of-range extent %d\n", i, ext);
+                    consistent = 0;
+                    break;
+                }
+                if (allocated[ext]) {
+                    printf("  [INCONSISTENT] Extent block %d referenced by multiple inodes\n", ext);
+                    consistent = 0;
+                    break;
+                }
+                allocated[ext] = 1;
+                unsigned char extBuf[BLOCKSIZE];
+                readBlock(mountedDisk, ext, extBuf);
+                if (extBuf[1] != 0x44) {
+                    printf("  [INCONSISTENT] Extent block %d has bad magic 0x%02X\n", ext, extBuf[1]);
+                    consistent = 0;
+                }
+                if (extBuf[0] != 3) {
+                    printf("  [INCONSISTENT] Expected extent type at block %d, got type %d\n", ext, extBuf[0]);
+                    consistent = 0;
+                }
+                ext = extBuf[2];
+                if (++extSteps > numOfBlocks) break;
+            }
+        }
+    }
+
+    /* --- Cross-check: no block on both free list and allocated --------- */
+    for (int i = 1; i < numOfBlocks; i++) {
+        if (onFreeList[i] && allocated[i]) {
+            printf("  [INCONSISTENT] Block %d is on the free list AND allocated to an inode\n", i);
+            consistent = 0;
+        }
+    }
+
+    /* --- Check for leaked blocks (neither free nor allocated) ---------- */
+    for (int i = 1; i < numOfBlocks; i++) {
+        if (!onFreeList[i] && !allocated[i]) {
+            /* Block 0 is the superblock — skip */
+            readBlock(mountedDisk, i, buf);
+            if (buf[0] != 1) { /* not superblock */
+                printf("  [INCONSISTENT] Block %d is neither free nor allocated (leaked)\n", i);
+                consistent = 0;
+            }
+        }
+    }
+
+    free(onFreeList);
+    free(allocated);
+
+    if (consistent) {
+        printf("  [OK] Filesystem is consistent (%d blocks checked)\n", numOfBlocks);
+        return TFS_SUCCESS;
+    }
+    return TFS_INCONSISTENT;
+}
+
+/* ====================================================================== */
 /*  tfs_mount                                                              */
 /* ====================================================================== */
 int tfs_mount(char *diskname) {
@@ -159,6 +300,13 @@ int tfs_mount(char *diskname) {
     numOfBlocks = (int)(diskSize / BLOCKSIZE);
 
     mountedDisk = disk;
+
+    /* Run consistency check on every mount */
+    if (tfs_checkConsistency() != TFS_SUCCESS) {
+        fprintf(stderr, "WARNING: tfs_mount: filesystem consistency check failed\n");
+        /* We still mount — let the caller decide whether to proceed */
+    }
+
     return TFS_SUCCESS;
 }
 
@@ -222,7 +370,7 @@ fileDescriptor tfs_openFile(char *name) {
     buffer[0] = 2;
     buffer[1] = 0x44;
     strncpy((char *)&buffer[4], name, 8);
-    /* size = 0, first extent = 0 already from memset */
+    /* size = 0, first extent = 0, RO flag = 0 already from memset */
     write_u32(buffer, INODE_CREATE_TIME, (uint32_t)now);
     write_u32(buffer, INODE_MODIFY_TIME, (uint32_t)now);
     write_u32(buffer, INODE_ACCESS_TIME, (uint32_t)now);
@@ -266,6 +414,9 @@ int tfs_writeFile(fileDescriptor FD, char *buffer, int size) {
     int inodeBlockNum = openFileTable[FD].inodeBlock;
     unsigned char inodeBuf[BLOCKSIZE];
     readBlock(mountedDisk, inodeBlockNum, inodeBuf);
+
+    /* Feature d: reject writes to read-only files */
+    if (inodeBuf[INODE_RO_FLAG]) return TFS_FILE_READ_ONLY;
 
     /* Free all existing extent blocks */
     int cur = inodeBuf[INODE_FIRST_EXTENT];
@@ -325,6 +476,9 @@ int tfs_deleteFile(fileDescriptor FD) {
     int inodeBlockNum = openFileTable[FD].inodeBlock;
     unsigned char inodeBuf[BLOCKSIZE];
     readBlock(mountedDisk, inodeBlockNum, inodeBuf);
+
+    /* Feature d: reject deletes of read-only files */
+    if (inodeBuf[INODE_RO_FLAG]) return TFS_FILE_READ_ONLY;
 
     /* Free all extent blocks */
     int cur = inodeBuf[INODE_FIRST_EXTENT];
@@ -410,8 +564,8 @@ int tfs_seek(fileDescriptor FD, int offset) {
 int tfs_readdir(void) {
     if (mountedDisk < 0) return TFS_NOT_MOUNTED;
 
-    printf("%-10s  %s\n", "NAME", "SIZE (bytes)");
-    printf("%-10s  %s\n", "----------", "------------");
+    printf("%-10s  %-12s  %s\n", "NAME", "SIZE (bytes)", "PERM");
+    printf("%-10s  %-12s  %s\n", "----------", "------------", "----");
 
     int found = 0;
     unsigned char buf[BLOCKSIZE];
@@ -421,9 +575,9 @@ int tfs_readdir(void) {
             char name[9];
             memset(name, 0, sizeof(name));
             strncpy(name, (char *)&buf[4], 8);
-
             int size = (int)read_u32(buf, 12);
-            printf("%-10s  %d\n", name, size);
+            const char *perm = buf[INODE_RO_FLAG] ? "RO" : "RW";
+            printf("%-10s  %-12d  %s\n", name, size, perm);
             found++;
         }
     }
@@ -467,6 +621,136 @@ int tfs_rename(fileDescriptor FD, char *newName) {
 }
 
 /* ====================================================================== */
+/*  tfs_makeRO  (extra feature d)                                         */
+/*  Makes a file read-only by name. File does not need to be open.        */
+/* ====================================================================== */
+int tfs_makeRO(char *name) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (!name || strlen(name) == 0 || strlen(name) > 8)
+        return TFS_FILE_NAME_TOO_LONG;
+
+    unsigned char buf[BLOCKSIZE];
+    for (int i = 1; i < numOfBlocks; i++) {
+        readBlock(mountedDisk, i, buf);
+        if (buf[0] == 2 && buf[1] == 0x44) {
+            if (strncmp((char *)&buf[4], name, 8) == 0) {
+                buf[INODE_RO_FLAG] = 1;
+                write_u32(buf, INODE_MODIFY_TIME, (uint32_t)time(NULL));
+                writeBlock(mountedDisk, i, buf);
+                return TFS_SUCCESS;
+            }
+        }
+    }
+    return TFS_ERROR; /* file not found */
+}
+
+/* ====================================================================== */
+/*  tfs_makeRW  (extra feature d)                                         */
+/*  Makes a file read-write by name. File does not need to be open.       */
+/* ====================================================================== */
+int tfs_makeRW(char *name) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (!name || strlen(name) == 0 || strlen(name) > 8)
+        return TFS_FILE_NAME_TOO_LONG;
+
+    unsigned char buf[BLOCKSIZE];
+    for (int i = 1; i < numOfBlocks; i++) {
+        readBlock(mountedDisk, i, buf);
+        if (buf[0] == 2 && buf[1] == 0x44) {
+            if (strncmp((char *)&buf[4], name, 8) == 0) {
+                buf[INODE_RO_FLAG] = 0;
+                write_u32(buf, INODE_MODIFY_TIME, (uint32_t)time(NULL));
+                writeBlock(mountedDisk, i, buf);
+                return TFS_SUCCESS;
+            }
+        }
+    }
+    return TFS_ERROR; /* file not found */
+}
+
+/* ====================================================================== */
+/*  tfs_writeByte  (extra feature d)                                      */
+/*  Writes one byte at the current file pointer position.                 */
+/*  The file pointer is incremented by one on success.                    */
+/*  The file must be read-write; writing past EOF extends the file.       */
+/* ====================================================================== */
+int tfs_writeByte(fileDescriptor FD, unsigned int data) {
+    if (mountedDisk < 0) return TFS_NOT_MOUNTED;
+    if (FD < 0 || FD >= MAX_OPEN_FILE || !openFileTable[FD].inUse)
+        return TFS_ERROR;
+
+    int inodeBlockNum = openFileTable[FD].inodeBlock;
+    unsigned char inodeBuf[BLOCKSIZE];
+    readBlock(mountedDisk, inodeBlockNum, inodeBuf);
+
+    /* Feature d: reject writes to read-only files */
+    if (inodeBuf[INODE_RO_FLAG]) return TFS_FILE_READ_ONLY;
+
+    int fileSize = (int)read_u32(inodeBuf, 12);
+    int fp = openFileTable[FD].filePointer;
+
+    if (fp > fileSize) return TFS_ERROR; /* beyond EOF */
+
+    /* If writing past current end, we need to extend.
+     * Strategy: read the whole file into a temp buffer, append the byte,
+     * then do a full tfs_writeFile to rewrite cleanly. */
+    if (fp == fileSize) {
+        /* Extend by one byte */
+        char *tmp = malloc(fileSize + 1);
+        if (!tmp) return TFS_ERROR;
+
+        /* Read existing content */
+        int extBlock = inodeBuf[INODE_FIRST_EXTENT];
+        int offset = 0;
+        while (extBlock != 0 && offset < fileSize) {
+            unsigned char ext[BLOCKSIZE];
+            readBlock(mountedDisk, extBlock, ext);
+            int toCopy = (fileSize - offset > 252) ? 252 : fileSize - offset;
+            memcpy(tmp + offset, &ext[4], toCopy);
+            offset += toCopy;
+            extBlock = ext[2];
+        }
+        tmp[fileSize] = (char)(data & 0xFF);
+
+        int savedFP = fp;
+        int ret = tfs_writeFile(FD, tmp, fileSize + 1);
+        free(tmp);
+        if (ret != TFS_SUCCESS) return ret;
+        /* Restore file pointer to just past the written byte */
+        openFileTable[FD].filePointer = savedFP + 1;
+        return TFS_SUCCESS;
+    }
+
+    /* Writing within existing content: find the extent block and byte */
+    int extentIdx  = fp / 252;
+    int byteOffset = fp % 252;
+
+    int extBlock = inodeBuf[INODE_FIRST_EXTENT];
+    for (int i = 0; i < extentIdx; i++) {
+        if (extBlock <= 0) return TFS_ERROR;
+        unsigned char ext[BLOCKSIZE];
+        readBlock(mountedDisk, extBlock, ext);
+        extBlock = ext[2];
+    }
+    if (extBlock <= 0) return TFS_ERROR;
+
+    unsigned char ext[BLOCKSIZE];
+    readBlock(mountedDisk, extBlock, ext);
+    ext[4 + byteOffset] = (unsigned char)(data & 0xFF);
+    writeBlock(mountedDisk, extBlock, ext);
+
+    openFileTable[FD].filePointer++;
+
+    /* Update modify + access timestamps */
+    time_t now = time(NULL);
+    write_u32(inodeBuf, INODE_MODIFY_TIME, (uint32_t)now);
+    write_u32(inodeBuf, INODE_ACCESS_TIME, (uint32_t)now);
+    writeBlock(mountedDisk, inodeBlockNum, inodeBuf);
+
+    return TFS_SUCCESS;
+}
+
+/* ====================================================================== */
 /*  tfs_readFileInfo  (extra feature e)                                   */
 /*  Fills a FileInfo struct for the open file identified by FD.           */
 /* ====================================================================== */
@@ -486,6 +770,7 @@ int tfs_readFileInfo(fileDescriptor FD, FileInfo *info) {
     info->createTime = (time_t)read_u32(inodeBuf, INODE_CREATE_TIME);
     info->modifyTime = (time_t)read_u32(inodeBuf, INODE_MODIFY_TIME);
     info->accessTime = (time_t)read_u32(inodeBuf, INODE_ACCESS_TIME);
+    info->readOnly   = inodeBuf[INODE_RO_FLAG];
 
     return TFS_SUCCESS;
 }

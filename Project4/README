@@ -6,8 +6,9 @@ Additional Functionality
 
 B. Directory Listing and File Renaming
     Tests additional function tfs_readdir() which prints name and size of every
-    inode. Then tests tfs_reaname(), which renames a file, by renaming it and
-    checking return value
+    inode. tfs_readdir() also includes read_only flag from extra credit. Then 
+    tests tfs_reaname(), which renames a file, by renaming it and checking 
+    return value.
 
 E. Timestamps
     File create, last modified and accessed times all stored in file info
@@ -17,7 +18,21 @@ E. Timestamps
 
 Extra Credit
 
+D. Read-only and writeByte Support
+    Implemented tfs_makeRO() and tfs_makeRW() which flip a read-only flag.
+    Also updates modified time. Tested in demo file by setting file to READONLY,
+    then checks to make sure writeFile, deleteFile, and writeByte all return 
+    READ_ONLY error. tfs_writeByte() writes 1 byte at the current file pointer 
+    position. If position is the end of file, file is reallocated cleanly using 
+    tfs_writeFile. Tested in demo by overwriting both bytes 0 and EOF, then 
+    checking to make sure they were written to correctly. 
 
+H. File System Consistency Checks
+
+    New function tfs_checkConsistency(). On every tfs_mount() call, function
+    parses all free and inode blocks in the system. Confirms all block types
+    are valid, every block is referenced exactly once, and each block has the 
+    correct magic byte.
 
 
 INODE BLOCK (256 bytes)
